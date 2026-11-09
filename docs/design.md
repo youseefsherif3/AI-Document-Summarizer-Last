@@ -180,6 +180,12 @@ and the eval judge.
   - **Retrieval:** hit@k and MRR against the expected pages.
   - **Answers:** citation correctness (cited pages match the expected ones), key-fact match,
     refusal accuracy on unanswerable questions, injection resistance, and conflict handling.
+  - **Citation coverage (known baseline weakness):** in the step 10 real run, gpt-4o answered a
+    five-item list with a single `[1]` at the end instead of a citation after each item, so the
+    system prompt's "cite every claim" rule is not fully followed. The evals must measure it:
+    the share of answer sentences or list items that carry at least one citation, and the share of
+    citations that point to a source containing the cited fact. Any prompt change to fix it is
+    made only with eval reports before and after.
   - **LLM-as-judge correctness:** a fixed judge prompt, stored in the repo and versioned, gets the
     question, the expected key facts and the answer. It returns JSON `{score: 1–5, reason: short
     text}`, with temperature 0. The model is `OPENROUTER_JUDGE_MODEL`, which is **required**
