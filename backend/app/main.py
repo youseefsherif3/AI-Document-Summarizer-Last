@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from typing import Literal
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +21,9 @@ from .database import (
     save_document_with_chunks,
     get_connection,
     delete_document,
+    existing_document_ids,
 )
+from app.services.chat import HistoryMessage, prepare_answer, stream_answer
 from app.services.chunking import Chunk, chunk_pages
 from app.services.embeddings import embed_texts
 from app.services.summarizer import (
@@ -78,6 +81,19 @@ class BlobSummaryRequest(BaseModel):
     pathname: str = Field(min_length=1, max_length=950)
     filename: str = Field(min_length=1, max_length=255)
     file_size: int = Field(gt=0, le=MAX_FILE_SIZE)
+
+
+class ChatHistoryItem(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=20_000)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(max_length=4_000)
+    # Earlier turns of the conversation; only the last few are sent to the model.
+    history: list[ChatHistoryItem] = Field(default_factory=list, max_length=50)
+    # None or [] = search all documents; otherwise only these.
+    document_ids: list[int] | None = Field(default=None, max_length=200)
 
 
 async def _delete_temporary_blob(pathname: str):
@@ -348,6 +364,74 @@ async def upload_document_stream_from_blob(upload: BlobSummaryRequest):
 
     return StreamingResponse(
         events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _chat_events(
+    message: str, history: list[HistoryMessage], document_ids: list[int] | None
+):
+    """SSE events for one question: `sources`, then `delta`s, then `done` (or `error`)."""
+    try:
+        prepared = await prepare_answer(message, history, document_ids)
+        yield _sse(
+            {
+                "type": "sources",
+                "sources": [
+                    {
+                        "n": source.n,
+                        "document_id": source.document_id,
+                        "filename": source.filename,
+                        "page": source.page,
+                        "chunk_id": source.chunk_id,
+                        "snippet": source.snippet,
+                        "similarity": round(source.similarity, 4),
+                    }
+                    for source in prepared.sources
+                ],
+            }
+        )
+        # aclosing: if the client disconnects, the model stream is closed too.
+        async with aclosing(stream_answer(prepared)) as answer:
+            async for part in answer:
+                yield _sse({"type": "delta", "content": part})
+        yield _sse({"type": "done", "usage": prepared.usage})
+    except TimeoutError as error:
+        yield _sse({"type": "error", "status": 504, "message": str(error)})
+    except ConnectionError as error:
+        yield _sse({"type": "error", "status": 503, "message": str(error)})
+    except AIServiceNotConfiguredError as error:
+        yield _sse({"type": "error", "status": 503, "message": str(error)})
+    except AIRateLimitError as error:
+        yield _sse({"type": "error", "status": 429, "message": str(error)})
+    except AIServiceError as error:
+        yield _sse({"type": "error", "status": 502, "message": str(error)})
+    except Exception:
+        logger.exception("Answering a chat question failed.")
+        yield _sse({"type": "error", "status": 500, "message": "Could not answer the question."})
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """Answer a question about the stored documents, with numbered sources, as SSE."""
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="The message is empty.")
+
+    document_ids = sorted(set(request.document_ids or [])) or None
+    if document_ids:
+        found = await run_in_threadpool(existing_document_ids, document_ids)
+        unknown = [document_id for document_id in document_ids if document_id not in found]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown document IDs: {', '.join(map(str, unknown))}.",
+            )
+
+    history = [HistoryMessage(item.role, item.content) for item in request.history]
+    return StreamingResponse(
+        _chat_events(message, history, document_ids),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )

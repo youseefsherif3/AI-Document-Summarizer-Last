@@ -77,6 +77,17 @@ def fake_embeddings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fake_query_embedding(monkeypatch):
+    """No real embedding calls for chat questions: the same fixed vector as fake chunks."""
+    import app.services.chat as chat
+
+    async def fake_embed_query(text):
+        return [1.0] + [0.0] * (database.EMBEDDING_DIMENSIONS - 1)
+
+    monkeypatch.setattr(chat, "embed_query", fake_embed_query)
+
+
+@pytest.fixture(autouse=True)
 def clean_database(test_database):
     with database.get_connection() as connection:
         connection.execute(text("TRUNCATE TABLE documents RESTART IDENTITY CASCADE"))

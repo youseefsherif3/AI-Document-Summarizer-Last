@@ -302,6 +302,18 @@ def search_chunks(
     return [match for match in matches if match.similarity >= min_similarity]
 
 
+def existing_document_ids(document_ids: Sequence[int]) -> set[int]:
+    """The subset of `document_ids` that exist."""
+    if not document_ids:
+        return set()
+    with get_connection() as connection:
+        rows = connection.execute(
+            text("SELECT id FROM documents WHERE id = ANY(CAST(:ids AS integer[]))"),
+            {"ids": list(document_ids)},
+        ).scalars()
+        return set(rows)
+
+
 def delete_document(document_id: int):
     # The chunks foreign key is ON DELETE CASCADE, so this also deletes the chunks.
     with get_connection() as connection:
