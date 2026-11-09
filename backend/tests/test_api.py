@@ -1,5 +1,6 @@
 
 import asyncio
+import json
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -56,6 +57,50 @@ def test_stream_upload_reports_provider_error_without_saving_document(monkeypatc
 
     assert '"type": "error"' in response.text
     assert "Provider rate limit." in response.text
+    assert documents == []
+
+
+def _sse_events(body: str) -> list[dict]:
+    return [
+        json.loads(line[len("data: "):])
+        for frame in body.split("\n\n")
+        for line in frame.split("\n")
+        if line.startswith("data: ")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "message"),
+    [
+        (TimeoutError("The AI service took too long to respond."), 504,
+         "The AI service took too long to respond."),
+        (ConnectionError("Could not connect to the AI service."), 503,
+         "Could not connect to the AI service."),
+        (main.AIServiceError("The AI service returned an API error: 402"), 502,
+         "The AI service returned an API error: 402"),
+    ],
+    ids=["timeout-504", "connection-503", "provider-error-502"],
+)
+def test_stream_upload_maps_ai_errors_without_saving_document(
+    monkeypatch, error, status, message
+):
+    async def mock_stream(text):
+        yield "Partial text"
+        raise error
+
+    monkeypatch.setattr(main, "stream_summary", mock_stream)
+    with TestClient(app) as client:
+        response = client.post(
+            "/documents/upload/stream",
+            files={"file": ("failing.txt", b"Some text.", "text/plain")},
+        )
+        documents = client.get("/documents").json()
+
+    events = _sse_events(response.text)
+    assert response.status_code == 200
+    assert events[0] == {"type": "delta", "content": "Partial text"}
+    assert events[-1] == {"type": "error", "status": status, "message": message}
+    assert not any(event["type"] == "done" for event in events)
     assert documents == []
 
 
@@ -168,45 +213,12 @@ def test_cancelled_blob_stream_deletes_temporary_upload_without_persisting(monke
     assert documents == []
 
 
-def test_upload_txt_file(monkeypatch):
-    def mock_summarize_text(text):
-        return "This is a test summary."
-
-    monkeypatch.setattr(
-        main,
-        "summarize_text",
-        mock_summarize_text,
-    )
-
-    file_content = b"This is a test document."
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/documents/upload",
-            files={
-                "file": (
-                    "test.txt",
-                    file_content,
-                    "text/plain",
-                )
-            },
-        )
-
-    assert response.status_code == 200
-
-    data = response.json()
-
-    assert data["filename"] == "test.txt"
-    assert data["extracted_text"] == "This is a test document."
-    assert data["summary"] == "This is a test summary."
-    assert data["document_id"] is not None
-
 def test_upload_unsupported_file():
     file_content = b"Fake image content"
 
     with TestClient(app) as client:
         response = client.post(
-            "/documents/upload",
+            "/documents/upload/stream",
             files={
                 "file": (
                     "test.jpg",
@@ -226,7 +238,7 @@ def test_upload_file_exceeding_size_limit():
 
     with TestClient(app) as client:
         response = client.post(
-            "/documents/upload",
+            "/documents/upload/stream",
             files={
                 "file": (
                     "large.txt",
@@ -240,118 +252,6 @@ def test_upload_file_exceeding_size_limit():
     assert response.json() == {
         "detail": "File size must not exceed 10 MB."
     }
-    
-def test_upload_returns_504_when_ai_times_out(monkeypatch):
-    def mock_summarize_text(text):
-        raise TimeoutError("The AI service took too long to respond.")
-
-    monkeypatch.setattr(
-        main,
-        "summarize_text",
-        mock_summarize_text,
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/documents/upload",
-            files={
-                "file": (
-                    "test.txt",
-                    b"This is a test document.",
-                    "text/plain",
-                )
-            },
-        )
-
-    assert response.status_code == 504
-    assert response.json() == {
-        "detail": "The AI service took too long to respond."
-    }
-
-def test_upload_returns_503_when_ai_connection_fails(monkeypatch):
-    def mock_summarize_text(text):
-        raise ConnectionError("Could not connect to the AI service.")
-
-    monkeypatch.setattr(
-        main,
-        "summarize_text",
-        mock_summarize_text,
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/documents/upload",
-            files={
-                "file": (
-                    "test.txt",
-                    b"This is a test document.",
-                    "text/plain",
-                )
-            },
-        )
-
-    assert response.status_code == 503
-    assert response.json() == {
-        "detail": "Could not connect to the AI service."
-    }
-
-def test_upload_returns_429_when_ai_rate_limit_exceeded(monkeypatch):
-    def mock_summarize_text(text):
-        raise main.AIRateLimitError(
-            "The AI service rate limit has been exceeded. Please try again later."
-        )
-
-    monkeypatch.setattr(
-        main,
-        "summarize_text",
-        mock_summarize_text,
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/documents/upload",
-            files={
-                "file": (
-                    "test.txt",
-                    b"This is a test document.",
-                    "text/plain",
-                )
-            },
-        )
-
-    assert response.status_code == 429
-    assert response.json() == {
-        "detail": "The AI service rate limit has been exceeded. Please try again later."
-    }
-    
-def test_upload_returns_502_when_ai_api_fails(monkeypatch):
-    def mock_summarize_text(text):
-        raise main.AIServiceError(
-            "The AI service returned an API error: 402"
-        )
-
-    monkeypatch.setattr(
-        main,
-        "summarize_text",
-        mock_summarize_text,
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/documents/upload",
-            files={
-                "file": (
-                    "test.txt",
-                    b"This is a test document.",
-                    "text/plain",
-                )
-            },
-        )
-
-    assert response.status_code == 502
-    assert response.json() == {
-        "detail": "The AI service returned an API error: 402"
-    }
 
 
 @pytest.fixture
@@ -362,12 +262,9 @@ def missing_api_key(monkeypatch):
         raise AssertionError("An AI client must not be created without an API key.")
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setattr(summarizer, "OpenAI", fail_if_client_created)
     monkeypatch.setattr(summarizer, "AsyncOpenAI", fail_if_client_created)
-    summarizer._get_client.cache_clear()
     summarizer._get_async_client.cache_clear()
     yield
-    summarizer._get_client.cache_clear()
     summarizer._get_async_client.cache_clear()
 
 
@@ -384,16 +281,4 @@ def test_stream_upload_returns_503_when_ai_not_configured(missing_api_key, caplo
     assert '"status": 503' in response.text
     assert "AI service is not configured." in response.text
     assert documents == []
-    assert "OPENROUTER_API_KEY is not set" in caplog.text
-
-
-def test_upload_returns_503_when_ai_not_configured(missing_api_key, caplog):
-    with TestClient(app) as client:
-        response = client.post(
-            "/documents/upload",
-            files={"file": ("test.txt", b"This is a test document.", "text/plain")},
-        )
-
-    assert response.status_code == 503
-    assert response.json() == {"detail": "AI service is not configured."}
     assert "OPENROUTER_API_KEY is not set" in caplog.text

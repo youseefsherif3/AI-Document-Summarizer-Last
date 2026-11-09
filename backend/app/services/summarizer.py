@@ -6,7 +6,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import (
-    OpenAI,
     AsyncOpenAI,
     APITimeoutError,
     APIConnectionError,
@@ -43,17 +42,8 @@ def _require_api_key() -> str:
     return api_key
 
 
-# Clients are created on first use so importing this module (e.g. in tests)
+# The client is created on first use so importing this module (e.g. in tests)
 # does not require OPENROUTER_API_KEY. A failed key check is not cached.
-@cache
-def _get_client() -> OpenAI:
-    return OpenAI(
-        base_url=OPENROUTER_BASE_URL,
-        api_key=_require_api_key(),
-        timeout=30.0,
-    )
-
-
 @cache
 def _get_async_client() -> AsyncOpenAI:
     return AsyncOpenAI(
@@ -103,60 +93,6 @@ async def stream_summary(text: str):
         raise AIRateLimitError(
             "The AI service rate limit has been exceeded. Please try again later."
         ) from error
-    except APIStatusError as error:
-        raise AIServiceError(
-            f"The AI service returned an API error: {error.status_code}"
-        ) from error
-
-
-def summarize_text(text: str) -> str:
-    if not text.strip():
-        raise ValueError("Cannot summarize empty text.")
-
-    try:
-        response = _get_client().chat.completions.create(
-            model=MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a professional document summarizer. "
-                        "Summarize the provided document clearly and accurately. "
-                        "Preserve its key ideas, important details, and conclusions. "
-                        "Do not add information that is not present in the document. "
-                        "Use the same language as the original document."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Summarize this document:\n\n{text}",
-                },
-            ],
-            max_tokens=1000,
-        )
-
-        summary = response.choices[0].message.content
-
-        if not summary:
-            raise ValueError("The AI model returned an empty summary.")
-
-        return summary.strip()
-
-    except APITimeoutError as error:
-        raise TimeoutError(
-            "The AI service took too long to respond."
-        ) from error
-
-    except APIConnectionError as error:
-        raise ConnectionError(
-            "Could not connect to the AI service."
-        ) from error
-
-    except RateLimitError as error:
-        raise AIRateLimitError(
-            "The AI service rate limit has been exceeded. Please try again later."
-        ) from error
-
     except APIStatusError as error:
         raise AIServiceError(
             f"The AI service returned an API error: {error.status_code}"

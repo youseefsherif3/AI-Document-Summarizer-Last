@@ -17,12 +17,10 @@ from vercel import blob
 from .database import (
     initialize_database,
     save_document,
-    update_document_summary,
     get_connection,
     delete_document,
 )
 from app.services.summarizer import (
-    summarize_text,
     AIRateLimitError,
     AIServiceError,
     AIServiceNotConfiguredError,
@@ -108,92 +106,6 @@ def extract_text(file_content: bytes, file_extension: str) -> str:
         return file_content.decode("utf-8-sig")
 
     return ""
-
-
-@app.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
-    filename = file.filename or ""
-
-    file_extension = (
-        "." + filename.rsplit(".", 1)[-1].lower()
-        if "." in filename else ""
-    )
-
-    if file_extension not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF, DOCX, and TXT files are allowed.",
-        )
-
-    file_content = await file.read(MAX_FILE_SIZE + 1)
-
-    if len(file_content) > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail="File size must not exceed 10 MB.",
-        )
-
-    if not file_content:
-        raise HTTPException(
-            status_code=400,
-            detail="The uploaded file is empty.",
-        )
-
-    try:
-        extracted_text = extract_text(file_content, file_extension)
-
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not read the uploaded file.",
-        )
-
-    if not extracted_text.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="No readable text found in the uploaded file.",
-        )
-
-    document_id = save_document(
-        filename=filename,
-        file_type=file_extension,
-        file_size=len(file_content),
-        file_content=file_content,
-        extracted_text=extracted_text,
-    )
-
-    try:
-        summary = summarize_text(extracted_text)
-
-        update_document_summary(
-            document_id=document_id,
-            summary=summary,
-        )
-
-    except TimeoutError as error:
-        raise HTTPException(status_code=504, detail=str(error))
-
-    except ConnectionError as error:
-        raise HTTPException(status_code=503, detail=str(error))
-
-    except AIServiceNotConfiguredError as error:
-        raise HTTPException(status_code=503, detail=str(error))
-
-    except AIRateLimitError as error:
-        raise HTTPException(status_code=429, detail=str(error))
-
-    except AIServiceError as error:
-        raise HTTPException(status_code=502, detail=str(error))
-
-    return {
-        "message": "File uploaded and processed successfully.",
-        "filename": filename,
-        "file_size": len(file_content),
-        "file_type": file_extension,
-        "extracted_text": extracted_text,
-        "summary": summary,
-        "document_id": document_id,
-    }
 
 
 @app.get("/documents")

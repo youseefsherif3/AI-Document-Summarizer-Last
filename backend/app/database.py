@@ -107,15 +107,6 @@ def save_document(
         return result.inserted_primary_key[0]
 
 
-def update_document_summary(document_id: int, summary: str):
-    with get_connection() as connection:
-        connection.execute(
-            documents.update()
-            .where(documents.c.id == document_id)
-            .values(summary=summary)
-        )
-
-
 def delete_document(document_id: int):
     with get_connection() as connection:
         result = connection.execute(
