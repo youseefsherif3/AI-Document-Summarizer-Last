@@ -241,7 +241,7 @@ def test_unexpected_errors_are_logged_and_reported(model, monkeypatch, caplog):
     def broken_search(*args, **kwargs):
         raise RuntimeError("database is down")
 
-    monkeypatch.setattr(chat, "search_chunks", broken_search)
+    monkeypatch.setattr(chat, "find_matches", broken_search)
 
     with TestClient(main.app) as client:
         _, events = ask(client, message="Question?")

@@ -62,8 +62,10 @@ Current state this builds on (branch `feature/rag`, HEAD `2f48c30`):
   a different provider. It defaults to a free model set in `.env`; the runner refuses to start if
   the judge and answer models are the same, and warns if they come from the same provider. The
   free defaults are chosen in step 14 from OpenRouter's current `:free` list.
-- **Arabic normalization for full-text search:** measured first in step 15. Normalization is added
-  only if the evals show it matters, as its own step.
+- **Arabic normalization for full-text search: skipped** (decided after step 15). Arabic is not a
+  supported language, and normalization wouldn't help the one Arabic-related group that hybrid
+  made worse (English questions about Arabic documents), because English words never match
+  Arabic text, normalized or not. See "Step 15 results and decision" below.
 - **Out of scope for Phase 2:** CI (Phase 3) and any production rollout. Neon setup, the
   `vector` extension there and backfilling production documents are not done in this phase.
   Everything runs locally.
@@ -120,10 +122,10 @@ and the eval judge.
 
 **Chat** (`services/chat.py` + `POST /chat/stream`, using `OPENROUTER_CHAT_MODEL`):
 - Request: `{message, history?: [{role, content}] (last 6 turns), document_ids?: int[]}`.
-- Retrieval (until step 15):
+- Retrieval (vector mode, the only mode until step 15; hybrid is the default since step 15):
   1. Embed the question.
   2. Fetch the top 8 chunks by cosine distance, filtered by `document_ids`.
-  3. Drop chunks below `RETRIEVAL_MIN_SIMILARITY`, which is **0 (disabled)** until step 16.
+  3. Drop chunks below `RETRIEVAL_MIN_SIMILARITY`, which stays **0 (disabled)** (step 16).
 - SSE events, in order:
   1. `sources`: `[{n, document_id, filename, page, chunk_id, snippet}]`
   2. `delta` events: answer text with `[n]` markers
@@ -140,15 +142,19 @@ and the eval judge.
   empty `sources` plus a fixed "I couldn't find this in your documents" reply, without calling the
   model.
 
-**Hybrid search** (step 15):
+**Hybrid search** (step 15, done; the default retrieval mode):
 - Two retrieval lists, each the top 20, both filtered by `document_ids`:
   - vector search (cosine distance);
-  - Postgres full-text search: `content_tsv @@ websearch_to_tsquery('simple', :q)`, ranked by
-    `ts_rank_cd`. The `simple` config doesn't stem, so Arabic and English words are matched as
-    written.
+  - Postgres full-text search: `content_tsv @@ to_tsquery('simple', :q)`, ranked by
+    `ts_rank_cd`. `:q` is the question's meaningful words joined with OR (`word1 | word2 | ...`):
+    stop words are dropped and only letters and digits are kept, so the query can't contain
+    tsquery operators. (`websearch_to_tsquery`, the original plan, requires every word to match,
+    which almost no chunk does for a full question.) The `simple` config doesn't stem, so words
+    are matched as written.
 - The lists are merged with reciprocal rank fusion, `score = Σ 1 / (60 + rank)`, and the top 8 are
-  kept. A setting (`RETRIEVAL_MODE=vector|hybrid`) keeps both modes available so the evals can
-  compare them.
+  kept. The code is in `backend/app/services/retrieval.py`.
+- `RETRIEVAL_MODE=hybrid|vector` (default `hybrid`). `vector` switches back to vector-only search;
+  the eval runner takes `--retrieval-mode` to compare the two.
 
 **Reranking** (step 17):
 - Retrieval (vector or hybrid, whichever the step 15 and 16 reports favor) returns the top 20
@@ -256,14 +262,15 @@ and the eval judge.
 | 12 | **Chat page frontend:** `lib/sse.ts`, `ChatMessage.sources`, streaming answer, citation buttons, sources list, document picker, Stop, errors, "Send Summary" kept. | `tsc --noEmit` and `npm run build`. A browser check with the backend running: ask a question, see the answer stream, the citations link to the sources, the picker limits results, Stop works, and backend errors show inline. |
 | 13 | **Eval corpus and questions:** `build_corpus.py` (fpdf2 added to `requirements-dev.txt`, Noto Naskh Arabic font and its license file in `evals/fonts/`), generated corpus, and `questions.jsonl` with 50+ items. Categories: single fact, two-page answer, table lookup, conflicting values, Arabic question on an Arabic document, English question on an Arabic document, cross-document, unanswerable, prompt injection. **I stop here for your review of every question and expected answer before committing.** | `pytest` validates the file: every expected document and page exists in the corpus, and every item has the required fields. The extraction check itself is reported by the evals, so a bad Arabic PDF extraction shows up as a measured result, not a failing test. |
 | 14 | **Eval runner and baseline:** `run_evals.py` with extraction, retrieval and answer metrics, LLM-as-judge (fixed prompt, score + short reason, judge checks), and per-category cost including the judge. Modes `retrieval` (default) and `answers`; embedding cache; cost estimate and confirmation; rate-limit retries; progress saved per question and `--resume`. Choose the free answer and judge models from OpenRouter's current `:free` list (different models, ideally different providers) and add them to `.env.example`. Run on vector search with threshold 0 and commit the **baseline reports**: retrieval mode (all 56 questions), then answers mode with the free models, once, without the 14 Arabic-PDF questions (42 questions, 84 requests, resumed over two days). | Unit tests with fixed inputs and mocked models: scoring, judge-response parsing (including malformed output), cost totals and the estimate; a 429 is retried after the wait; a stopped run resumes without redoing finished questions; a resume with changed settings is refused; cached embeddings make no API call; the runner refuses identical judge and answer models and warns on the same provider. Real runs only after you approve the printed estimate. |
-| 15 | **Future work, not done in Phase 2.** **Hybrid search:** `content_tsv` generated column with the `simple` config and a GIN index, the full-text search leg, reciprocal rank fusion, `RETRIEVAL_MODE` setting. Run the evals **before** (vector) and **after** (hybrid) in retrieval mode only, and commit both reports. The reports show Arabic retrieval results separately, to decide whether Arabic normalization is needed (it would be its own later step). | Postgres tests: an exact-term query that vector search misses is found by hybrid; an Arabic term matches with `simple`; the RRF order is checked on a small hand-made example; the `document_ids` filter applies to both lists; `vector` mode still behaves as before. |
+| 15 | **Done (hybrid is the default; see "Step 15 results and decision" below).** **Hybrid search:** `content_tsv` generated column with the `simple` config and a GIN index, the full-text search leg, reciprocal rank fusion, `RETRIEVAL_MODE` setting. Run the evals **before** (vector) and **after** (hybrid) in retrieval mode only, and commit both reports. The reports show Arabic retrieval results separately, to decide whether Arabic normalization is needed (it would be its own later step). | Postgres tests: an exact-term query that vector search misses is found by hybrid; an Arabic term matches with `simple`; the RRF order is checked on a small hand-made example; the `document_ids` filter applies to both lists; `vector` mode still behaves as before. |
 | 16 | **Decided: keep `RETRIEVAL_MIN_SIMILARITY` at 0** (see "Step 16 decision" below; no code change). Original plan: **Similarity threshold tuning:** choose `RETRIEVAL_MIN_SIMILARITY` from retrieval data only: for each candidate threshold, the share of unanswerable questions whose best match falls below it (they would get the fixed "not found" reply) against the share of answerable questions whose correct source would be dropped. The step 14 baseline already shows these overlap, so the result may be to keep 0. Run the evals **before** (0) and **after** (the chosen value) in retrieval mode only, and commit both reports. | The before and after reports, compared in the commit message. A test that chunks under the threshold are dropped, and that 0 disables the threshold. |
 | 17 | **Future work, not done in Phase 2.** **Reranking:** retrieve the top 20, rerank down to 8, `RERANK_ENABLED` setting, fallback to the retrieval order on reranker failure, usage logging. Choose the reranker first, preferring a free option (a `:free` model through OpenRouter); if it needs a new provider or dependency, list the options and ask before writing code. Run the evals **before** (reranking off) and **after** (on) in retrieval mode only (the reranker's own calls are the only model calls), and commit both reports. | Unit tests with a mocked reranker: it receives 20 chunks and 8 come back in its order; with reranking off, retrieval order is unchanged; a reranker error falls back to the first 8 and is logged; the call is usage-logged. The before and after reports, compared in the commit message. |
 
 ## Status at delivery (2026-11-09)
 
 - **Done:** steps 1–8 and 10–13; step 14's eval runner and **retrieval baseline** (all 56
-  questions); step 16 (decided, below).
+  questions); step 16 (decided, below); step 15 (hybrid search, finished on
+  `feature/phase2-improvements` after delivery, results below).
 - **Partial:** step 14's **answers baseline**: 2 of 42 questions evaluated (both scored 5/5 by
   the judge, with correct citations). The free OpenRouter endpoints were congested on delivery
   day: `google/gemma-4-31b-it:free` stopped after 1 question, and
@@ -272,11 +279,48 @@ and the eval judge.
   full run takes several days. The partial report
   (`backend/evals/reports/20261109-135409-baseline-answers-partial.md`) lists what was evaluated,
   the reason, and the resume command (with `EVAL_ANSWER_MODEL=google/gemma-4-26b-a4b-it:free`).
-- **Future work:** step 15 (hybrid search) and step 17 (reranking). The baseline shows where
-  they would help: without the Arabic-PDF questions, the right source is always in the top 8
-  (hit@8 100%) but first only 69% of the time, because look-alike documents rank higher.
+- **Future work:** step 17 (reranking). The baseline shows where it would help: without the
+  Arabic-PDF questions, the right source is always in the top 8 (hit@8 100%) but first only 69%
+  of the time with vector search (71% with hybrid), because look-alike documents rank higher.
 - **Phase 3:** step 9 (backfill script), CI, production rollout, and the known issues in
   CLAUDE.md (including Arabic PDF extraction).
+
+### Step 15 results and decision: hybrid by default, no Arabic normalization
+
+Reports (retrieval mode, all 56 questions, top 8):
+`backend/evals/reports/20261109-144657-step15-vector` (before) and
+`backend/evals/reports/20261109-144701-step15-hybrid` (after). Answerable questions only:
+
+| Group | Questions | hit@1 | hit@3 | hit@8 | MRR |
+|---|---|---|---|---|---|
+| All, vector → hybrid | 49 | 53% → 55% | 86% → 84% | 94% → 92% | 0.684 → 0.700 |
+| Without Arabic-PDF questions | 35 | 69% → 71% | 91% → 91% | 100% → 100% | 0.796 → 0.825 |
+| single_fact | 15 | 73% → 80% | 93% → 87% | 100% → 100% | 0.813 → 0.867 |
+| table | 5 | 40% → 80% | 100% → 100% | 100% → 100% | 0.633 → 0.900 |
+| cross_document | 5 | 80% → 60% | 80% → 100% | 100% → 100% | 0.850 → 0.767 |
+| english_on_arabic | 5 | 20% → 0% | 40% → 20% | 60% → 40% | 0.292 → 0.117 |
+| arabic | 10 | 30% → 30% | 90% → 90% | 90% → 90% | 0.567 → 0.567 |
+
+Both expected sources in the top 8, cross-document questions only: **2 of 5 → 4 of 5**
+(40% → 80%; with the one conflict question included, 50% → 83%).
+
+What this shows:
+- Exact words and numbers help: table questions put the right chunk first twice as often, and
+  single-fact questions improve too.
+- Questions that need two documents now get both into the top 8 four times out of five instead
+  of two, which is what the answer needs to combine them. The second document sometimes takes
+  first place, so cross-document hit@1 drops while hit@3 rises.
+- English questions about Arabic documents get worse: English words never match Arabic text, so
+  the full-text list fills with unrelated English chunks and pushes the Arabic ones down. Most of
+  these questions are sourced from the two Arabic PDFs, which are already known to fail.
+- Overall the gain is modest (MRR 0.796 → 0.825 without the Arabic PDFs) on a small question
+  set, where one question moves a group's numbers a lot.
+
+Decision: **hybrid is the default** (`RETRIEVAL_MODE=hybrid`), since it improves ranking overall
+and roughly doubles how often cross-document answers get both sources. **Arabic normalization is
+skipped:** Arabic is not a supported language, and normalizing Arabic spelling wouldn't fix
+English-on-Arabic matching, which is the group that got worse. `RETRIEVAL_MODE=vector` stays
+available to switch back.
 
 ### Step 16 decision: keep the threshold at 0
 
@@ -307,9 +351,6 @@ no code change.
 None for now. These are decided at their steps:
 - The free answer and judge models, in step 14, from OpenRouter's `:free` list at that time
   (free models come and go, so they are settings in `.env`, not fixed in code).
-- Whether Arabic normalization is needed, from the step 15 reports. (The `simple` config doesn't
-  unify alef forms (أ إ آ ا), ta marbuta or diacritics, so some Arabic words may not match in
-  full-text search.)
 - The reranker, at the start of step 17, preferring a free option. A new provider or dependency
   needs your OK first.
 
@@ -341,6 +382,9 @@ None for now. These are decided at their steps:
   - free endpoints may log prompts, which is acceptable only because the eval corpus is
     fictional: evals must never run on real documents with free models;
   - free models can disappear or change, so the model IDs are recorded in every report.
+- **Hybrid by default:** better ranking for exact terms and cross-document questions, but English
+  questions about Arabic documents rank worse than with vector-only search, and each question
+  runs two searches instead of one (both in the same database, no extra AI call).
 - **Reranking:** usually puts the most relevant chunks first and lets retrieval cast a wider net
   (20 instead of 8), but adds one more call per question: extra latency and cost, or a large local
   dependency. It is kept only if the step 17 reports show it helps.

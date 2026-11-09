@@ -162,6 +162,7 @@ def test_prepare_answer_retrieves_numbered_sources_from_the_database(monkeypatch
 
 def test_retrieval_uses_top_k_and_the_threshold(monkeypatch):
     calls = []
+    monkeypatch.setenv("RETRIEVAL_MODE", "vector")
 
     async def fake_embed_query(text):
         return vec(1)
@@ -177,6 +178,28 @@ def test_retrieval_uses_top_k_and_the_threshold(monkeypatch):
     asyncio.run(chat.retrieve_sources("Question?", [3, 4]))
 
     assert calls == [(8, [3, 4], 0.4)]
+
+
+def test_retrieval_uses_hybrid_search_by_default(monkeypatch):
+    calls = []
+
+    async def fake_embed_query(text):
+        return vec(1)
+
+    def fake_hybrid(question, vector, k, document_ids, min_similarity):
+        calls.append((question, k, document_ids, min_similarity))
+        return []
+
+    monkeypatch.delenv("RETRIEVAL_MODE", raising=False)
+    monkeypatch.setattr(chat, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat, "hybrid_search", fake_hybrid)
+    monkeypatch.setattr(chat, "search_chunks",
+                        lambda *a, **k: pytest.fail("vector-only search must not run by default"))
+    monkeypatch.setenv("RETRIEVAL_MIN_SIMILARITY", "0.4")
+
+    asyncio.run(chat.retrieve_sources("Question?", [3, 4]))
+
+    assert calls == [("Question?", 8, [3, 4], 0.4)]
 
 
 def test_empty_question_is_rejected():

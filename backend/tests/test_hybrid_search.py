@@ -60,7 +60,7 @@ def test_fusion_ties_keep_the_vector_order():
     assert retrieval.reciprocal_rank_fusion([["a", "b"], ["c", "d"]]) == ["a", "c", "b", "d"]
 
 
-@pytest.mark.parametrize(("value", "mode"), [(None, "vector"), ("", "vector"), ("HYBRID", "hybrid")])
+@pytest.mark.parametrize(("value", "mode"), [(None, "hybrid"), ("", "hybrid"), ("VECTOR", "vector"), ("HYBRID", "hybrid")])
 def test_retrieval_mode_setting(monkeypatch, value, mode):
     if value is None:
         monkeypatch.delenv("RETRIEVAL_MODE", raising=False)
@@ -156,8 +156,19 @@ def test_question_without_meaningful_words_falls_back_to_vector_order():
     assert [m.chunk_id for m in hybrid] == [m.chunk_id for m in vector]
 
 
-def test_vector_mode_is_the_default_and_never_runs_full_text_search(monkeypatch):
+def test_hybrid_mode_is_the_default(monkeypatch):
     monkeypatch.delenv("RETRIEVAL_MODE", raising=False)
+    save("doc.txt", [("The RouteWise tool is owned by Operations.", vec(0, 1)),
+                     ("Unrelated text.", vec(1, 0))])
+
+    # Vector search alone ranks the unrelated chunk first; full-text search lifts RouteWise.
+    assert chat.find_matches("Who owns RouteWise?", vec(1, 0), k=2)[0].content == (
+        "The RouteWise tool is owned by Operations."
+    )
+
+
+def test_vector_mode_never_runs_full_text_search(monkeypatch):
+    monkeypatch.setenv("RETRIEVAL_MODE", "vector")
     monkeypatch.setattr(retrieval, "full_text_search_chunks",
                         lambda *a, **k: pytest.fail("full-text search must not run in vector mode"))
     save("doc.txt", [("RouteWise", vec(1))])

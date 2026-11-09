@@ -11,6 +11,7 @@
 - Backend: FastAPI in backend/app/
   - main.py: endpoints, text extraction (pypdf, python-docx, utf-8), validation
   - services/summarizer.py: the only place that calls OpenRouter (OpenAI SDK, base_url=https://openrouter.ai/api/v1)
+  - services/retrieval.py: chat retrieval. RETRIEVAL_MODE=hybrid (default: vector search + Postgres full-text search, merged with reciprocal rank fusion) or vector (vector search only)
   - database.py: SQLAlchemy Core, one `documents` table. Postgres + pgvector only (Neon in production, docker-compose.yml locally); DATABASE_URL is required, there is no SQLite fallback
 - Streaming uses SSE events: {"type": "delta" | "done" | "error", ...}. A document is saved only after the stream finishes successfully.
 - Provider errors are mapped: TimeoutError→504, ConnectionError→503, AIServiceNotConfiguredError (OPENROUTER_API_KEY missing)→503, AIRateLimitError→429, AIServiceError→502
@@ -21,6 +22,7 @@
 - Production database is Neon Postgres, so the vector store is pgvector. Local dev uses Postgres + pgvector in Docker.
 - All Phase 2 work happens on the branch feature/rag, one small commit per step
 - Once the plan is approved it will be saved in docs/design.md. After that, implement ONE step at a time, then stop and show the diff.
+- Step 15 (hybrid search) is done and hybrid is the default retrieval mode; results and the decision are in docs/design.md ("Step 15 results and decision"). Arabic normalization was skipped. Step 17 (reranking) has not started.
 
 ## Conventions
 - All calls to OpenRouter (chat and embeddings) live in backend/app/services/ — never from main.py or the frontend
@@ -44,7 +46,7 @@
 - Blob upload authorization only checks Origin/Host headers; orphaned blobs are never cleaned up
 - Deployment is two Vercel projects (frontend at the repo root, backend in `backend/`) plus Neon; see README "Deployment". In production, uploads must use Vercel Blob (Vercel Functions accept at most 4.5 MB per request) and one upload must finish within the function time limit (300 s on Hobby). Documents uploaded before RAG have no chunks until re-uploaded.
 - Raw file bytes are stored in the DB but never read
-- Arabic **PDF** extraction with pypdf came out badly broken in our test (stray control characters, split words, scrambled word order) and was not investigated. Arabic PDFs are not supported for now, and eval questions whose source is an Arabic PDF (`waha_library_ar.pdf`, `nursin_port_ar.pdf`) are expected to fail. Arabic TXT and DOCX extraction, Arabic questions and English–Arabic retrieval worked in our tests.
+- Arabic **PDF** extraction with pypdf came out badly broken in our test (stray control characters, split words, scrambled word order) and was not investigated. Arabic PDFs are not supported for now, and eval questions whose source is an Arabic PDF (`waha_library_ar.pdf`, `nursin_port_ar.pdf`) are expected to fail. Arabic TXT and DOCX extraction, Arabic questions and English–Arabic retrieval worked in our tests, but Arabic is not a supported language: Arabic normalization for full-text search was skipped (step 15), and with hybrid search, English questions about Arabic documents rank worse than with vector-only search.
 - `npm run lint` fails on code from the original import, not changed in Phase 2: `app/page.tsx` (dashboard) calls a setState-ing function directly in `useEffect` (error: `react-hooks/set-state-in-effect`), and `components/documents/FileCard.tsx` imports `LoaderCircle` without using it (warning). `tsc --noEmit` and `npm run build` pass.
 
 ## Avoid

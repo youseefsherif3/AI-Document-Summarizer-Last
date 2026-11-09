@@ -111,7 +111,7 @@ def find_matches(
     mode: str | None = None,
     threshold: float | None = None,
 ) -> list[ChunkMatch]:
-    """The top k chunks for a question, by RETRIEVAL_MODE: vector (default) or hybrid."""
+    """The top k chunks for a question, by RETRIEVAL_MODE: hybrid (default) or vector."""
     threshold = min_similarity() if threshold is None else threshold
     if (mode or retrieval_mode()) == "hybrid":
         return hybrid_search(question, vector, k=k, document_ids=document_ids,

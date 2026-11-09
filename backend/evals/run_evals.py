@@ -916,7 +916,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="leave out the questions sourced from the two Arabic PDFs "
                              "(known to fail); the report lists them")
     parser.add_argument("--retrieval-mode", choices=["vector", "hybrid"],
-                        help="override RETRIEVAL_MODE (default: vector)")
+                        help="override RETRIEVAL_MODE (default: hybrid)")
     return parser.parse_args(argv)
 
 

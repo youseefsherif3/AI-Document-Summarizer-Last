@@ -1,5 +1,5 @@
 """Hybrid retrieval (step 15): vector search plus Postgres full-text search, merged with
-reciprocal rank fusion. Chosen with RETRIEVAL_MODE=vector|hybrid (default: vector).
+reciprocal rank fusion. Chosen with RETRIEVAL_MODE=hybrid|vector (default: hybrid).
 """
 
 import os
@@ -30,7 +30,7 @@ _WORD = re.compile(r"[^\W_]+")
 
 
 def retrieval_mode() -> str:
-    mode = os.getenv("RETRIEVAL_MODE", "vector").strip().lower() or "vector"
+    mode = os.getenv("RETRIEVAL_MODE", "hybrid").strip().lower() or "hybrid"
     if mode not in RETRIEVAL_MODES:
         raise ValueError(f"RETRIEVAL_MODE must be one of {', '.join(RETRIEVAL_MODES)}, got {mode!r}.")
     return mode
