@@ -14,6 +14,7 @@ from app.database import ChunkMatch, search_chunks
 
 from . import summarizer
 from .embeddings import embed_query
+from .retrieval import hybrid_search, retrieval_mode
 from .summarizer import AIServiceError, _get_async_client, rate_limit_error
 from .usage import log_ai_usage
 
@@ -102,18 +103,28 @@ def sources_from_matches(matches: Sequence[ChunkMatch]) -> list[Source]:
     ]
 
 
+def find_matches(
+    question: str,
+    vector: Sequence[float],
+    document_ids: Sequence[int] | None = None,
+    k: int = RETRIEVAL_TOP_K,
+    mode: str | None = None,
+    threshold: float | None = None,
+) -> list[ChunkMatch]:
+    """The top k chunks for a question, by RETRIEVAL_MODE: vector (default) or hybrid."""
+    threshold = min_similarity() if threshold is None else threshold
+    if (mode or retrieval_mode()) == "hybrid":
+        return hybrid_search(question, vector, k=k, document_ids=document_ids,
+                             min_similarity=threshold)
+    return search_chunks(vector, k=k, document_ids=document_ids, min_similarity=threshold)
+
+
 async def retrieve_sources(
     question: str, document_ids: Sequence[int] | None = None
 ) -> list[Source]:
-    """The chunks most similar to the question, numbered from 1."""
+    """The chunks most relevant to the question, numbered from 1."""
     vector = await embed_query(question)
-    matches = await run_in_threadpool(
-        search_chunks,
-        vector,
-        k=RETRIEVAL_TOP_K,
-        document_ids=document_ids,
-        min_similarity=min_similarity(),
-    )
+    matches = await run_in_threadpool(find_matches, question, vector, document_ids)
     return sources_from_matches(matches)
 
 

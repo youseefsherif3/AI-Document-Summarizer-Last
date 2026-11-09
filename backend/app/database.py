@@ -151,6 +151,22 @@ def initialize_database():
 
     with engine.begin() as connection:
         _check_embedding_dimensions(connection)
+        _add_full_text_search(connection)
+
+
+def _add_full_text_search(connection: Connection):
+    """Full-text search for hybrid retrieval (step 15), added to new and existing databases.
+
+    The 'simple' config lowercases words but does not stem or drop stop words, so Arabic
+    and English words match as written.
+    """
+    connection.execute(text(
+        "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector "
+        "GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED"
+    ))
+    connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_chunks_content_tsv ON chunks USING gin (content_tsv)"
+    ))
 
 
 def _check_embedding_dimensions(connection: Connection):
@@ -300,6 +316,55 @@ def search_chunks(
     if min_similarity <= 0:
         return matches
     return [match for match in matches if match.similarity >= min_similarity]
+
+
+_FULL_TEXT_SEARCH_SQL = text(
+    """
+    SELECT
+        c.id AS chunk_id,
+        c.document_id,
+        d.filename,
+        c.page_number,
+        c.chunk_index,
+        c.content,
+        1 - (c.embedding <=> CAST(:query AS vector)) AS similarity
+    FROM chunks AS c
+    JOIN documents AS d ON d.id = c.document_id
+    WHERE c.content_tsv @@ to_tsquery('simple', :tsquery)
+      AND (CAST(:document_ids AS integer[]) IS NULL
+           OR c.document_id = ANY(CAST(:document_ids AS integer[])))
+    ORDER BY ts_rank_cd(c.content_tsv, to_tsquery('simple', :tsquery)) DESC, c.id
+    LIMIT :k
+    """
+)
+
+
+def full_text_search_chunks(
+    query_embedding: Sequence[float],
+    tsquery: str,
+    k: int = 20,
+    document_ids: Sequence[int] | None = None,
+) -> list[ChunkMatch]:
+    """The k chunks whose words best match `tsquery` (Postgres full-text search), best first.
+
+    `tsquery` must be a to_tsquery expression of plain words (see services/retrieval.py).
+    `query_embedding` is only used to report each chunk's cosine similarity.
+    """
+    if k <= 0:
+        raise ValueError("k must be positive.")
+    if document_ids is not None and not document_ids:
+        return []
+    with get_connection() as connection:
+        rows = connection.execute(
+            _FULL_TEXT_SEARCH_SQL,
+            {
+                "query": _vector_literal(query_embedding),
+                "tsquery": tsquery,
+                "document_ids": list(document_ids) if document_ids is not None else None,
+                "k": k,
+            },
+        ).mappings().all()
+    return [ChunkMatch(**row) for row in rows]
 
 
 def existing_document_ids(document_ids: Sequence[int]) -> set[int]:

@@ -1,0 +1,766 @@
+{
+  "run_id": "20261109-144656-retrieval",
+  "started_at": "2026-11-09T14:46:56+00:00",
+  "finished_at": "2026-11-09T14:46:57+00:00",
+  "settings": {
+    "mode": "retrieval",
+    "answer_model": null,
+    "judge_model": null,
+    "embedding_model": "openai/text-embedding-3-small",
+    "retrieval_mode": "vector",
+    "top_k": 8,
+    "min_similarity": 0.0,
+    "chunk_max_tokens": 800,
+    "chunk_overlap_tokens": 120,
+    "questions_sha": "0947b8d4a9cf25d6",
+    "corpus_sha": "5b8ee69c49b101d9",
+    "system_prompt_sha": "b55447865df8697e",
+    "judge_prompt_version": null,
+    "excluded_questions": [],
+    "exclusion_reason": null
+  },
+  "partial": null,
+  "evaluated_questions": 56,
+  "total_questions": 56,
+  "excluded": {
+    "reason": null,
+    "questions": []
+  },
+  "estimate": [
+    {
+      "part": "embeddings",
+      "requests": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "note": "75 of 75 texts already cached"
+    }
+  ],
+  "extraction": [
+    {
+      "document": "northwind_handbook.pdf",
+      "format": "pdf",
+      "language": "en",
+      "facts": 17,
+      "found": 17,
+      "rate": 1.0
+    },
+    {
+      "document": "brightwater_policies.pdf",
+      "format": "pdf",
+      "language": "en",
+      "facts": 9,
+      "found": 9,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_security_policy.docx",
+      "format": "docx",
+      "language": "en",
+      "facts": 7,
+      "found": 7,
+      "rate": 1.0
+    },
+    {
+      "document": "brightwater_it_rules.docx",
+      "format": "docx",
+      "language": "en",
+      "facts": 4,
+      "found": 4,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_q3_report.txt",
+      "format": "txt",
+      "language": "en",
+      "facts": 6,
+      "found": 6,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_onboarding_memo.txt",
+      "format": "txt",
+      "language": "en",
+      "facts": 7,
+      "found": 7,
+      "rate": 1.0
+    },
+    {
+      "document": "waha_library_ar.pdf",
+      "format": "pdf",
+      "language": "ar",
+      "facts": 14,
+      "found": 9,
+      "rate": 0.6428571428571429
+    },
+    {
+      "document": "nursin_port_ar.pdf",
+      "format": "pdf",
+      "language": "ar",
+      "facts": 6,
+      "found": 2,
+      "rate": 0.3333333333333333
+    },
+    {
+      "document": "nakheel_library_ar.txt",
+      "format": "txt",
+      "language": "ar",
+      "facts": 4,
+      "found": 4,
+      "rate": 1.0
+    }
+  ],
+  "retrieval": {
+    "all": {
+      "questions": 49,
+      "hit@1": 0.5306122448979592,
+      "hit@3": 0.8571428571428571,
+      "hit@8": 0.9387755102040817,
+      "mrr": 0.6835034013605442,
+      "all_sources_found": 0.5
+    },
+    "without_arabic_pdf": {
+      "questions": 35,
+      "hit@1": 0.6857142857142857,
+      "hit@3": 0.9142857142857143,
+      "hit@8": 1.0,
+      "mrr": 0.7961904761904762,
+      "all_sources_found": 0.6
+    },
+    "by_category": {
+      "single_fact": {
+        "questions": 15,
+        "hit@1": 0.7333333333333333,
+        "hit@3": 0.9333333333333333,
+        "hit@8": 1.0,
+        "mrr": 0.8133333333333334,
+        "all_sources_found": null
+      },
+      "two_page": {
+        "questions": 3,
+        "hit@1": 0.3333333333333333,
+        "hit@3": 0.6666666666666666,
+        "hit@8": 1.0,
+        "mrr": 0.5833333333333334,
+        "all_sources_found": null
+      },
+      "table": {
+        "questions": 5,
+        "hit@1": 0.4,
+        "hit@3": 1.0,
+        "hit@8": 1.0,
+        "mrr": 0.6333333333333333,
+        "all_sources_found": null
+      },
+      "conflict": {
+        "questions": 1,
+        "hit@1": 1.0,
+        "hit@3": 1.0,
+        "hit@8": 1.0,
+        "mrr": 1.0,
+        "all_sources_found": 1.0
+      },
+      "newer_updates_older": {
+        "questions": 2,
+        "hit@1": 0.0,
+        "hit@3": 1.0,
+        "hit@8": 1.0,
+        "mrr": 0.5,
+        "all_sources_found": null
+      },
+      "arabic": {
+        "questions": 10,
+        "hit@1": 0.3,
+        "hit@3": 0.9,
+        "hit@8": 0.9,
+        "mrr": 0.5666666666666667,
+        "all_sources_found": null
+      },
+      "english_on_arabic": {
+        "questions": 5,
+        "hit@1": 0.2,
+        "hit@3": 0.4,
+        "hit@8": 0.6,
+        "mrr": 0.2916666666666667,
+        "all_sources_found": null
+      },
+      "cross_document": {
+        "questions": 5,
+        "hit@1": 0.8,
+        "hit@3": 0.8,
+        "hit@8": 1.0,
+        "mrr": 0.85,
+        "all_sources_found": 0.4
+      },
+      "unanswerable": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "injection": {
+        "questions": 3,
+        "hit@1": 1.0,
+        "hit@3": 1.0,
+        "hit@8": 1.0,
+        "mrr": 1.0,
+        "all_sources_found": null
+      }
+    },
+    "by_language": {
+      "en": {
+        "questions": 38,
+        "hit@1": 0.6052631578947368,
+        "hit@3": 0.8421052631578947,
+        "hit@8": 0.9473684210526315,
+        "mrr": 0.719078947368421,
+        "all_sources_found": 0.5
+      },
+      "ar": {
+        "questions": 11,
+        "hit@1": 0.2727272727272727,
+        "hit@3": 0.9090909090909091,
+        "hit@8": 0.9090909090909091,
+        "mrr": 0.5606060606060606,
+        "all_sources_found": null
+      }
+    }
+  },
+  "top_similarity": {
+    "answerable": {
+      "mean": 0.5387307284150616,
+      "min": 0.2058187881766833,
+      "max": 0.7628415869342852
+    },
+    "unanswerable": {
+      "mean": 0.4582269122643592,
+      "min": 0.19632650732591794,
+      "max": 0.5880870604119284
+    }
+  },
+  "answers": {
+    "all": {},
+    "without_arabic_pdf": {},
+    "by_category": {
+      "single_fact": {},
+      "two_page": {},
+      "table": {},
+      "conflict": {},
+      "newer_updates_older": {},
+      "arabic": {},
+      "english_on_arabic": {},
+      "cross_document": {},
+      "unanswerable": {},
+      "injection": {}
+    }
+  },
+  "actual_cost": {},
+  "questions": [
+    {
+      "id": "sf-01",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.674218545053303,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-02",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6383133803608746,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-03",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6438238093063905,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-04",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6907722060161438,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-05",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5864273028558551,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "sf-06",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5571916120587608,
+      "first_hit_rank": 5,
+      "judge_score": null
+    },
+    {
+      "id": "sf-07",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5950551137372633,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "sf-08",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5954867094858254,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-09",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.7013384365626861,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-10",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5222736265935405,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-11",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.7192298215524688,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-12",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5661406332844765,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-13",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6568146969442322,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-14",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.7103897724583483,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "sf-15",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.498454772109338,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "tp-01",
+      "category": "two_page",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5076837861938854,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "tp-02",
+      "category": "two_page",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5830453449949093,
+      "first_hit_rank": 4,
+      "judge_score": null
+    },
+    {
+      "id": "tp-03",
+      "category": "two_page",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.37793196520698347,
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "tb-01",
+      "category": "table",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5700879417839081,
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "tb-02",
+      "category": "table",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5306154984107897,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "tb-03",
+      "category": "table",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.4852897509764773,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "tb-04",
+      "category": "table",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5633092147475044,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "tb-05",
+      "category": "table",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5199392271779286,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "cf-01",
+      "category": "conflict",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.666164752483241,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "up-01",
+      "category": "newer_updates_older",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.7138879552329922,
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "up-02",
+      "category": "newer_updates_older",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6792934951410691,
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "ar-01",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.46333864057801377,
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "ar-02",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.5160880484850231,
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "ar-03",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.5531393460170365,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "ar-04",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.399248562826479,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "ar-05",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.3531337365791508,
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "ar-06",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.3259712771501406,
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "ar-07",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.35657986777046247,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "ar-08",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": false,
+      "top_similarity": 0.6305476904644943,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "ar-09",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": false,
+      "top_similarity": 0.5095777091290563,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "ar-10",
+      "category": "arabic",
+      "language": "ar",
+      "arabic_pdf": true,
+      "top_similarity": 0.3557387040851252,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "ea-01",
+      "category": "english_on_arabic",
+      "language": "en",
+      "arabic_pdf": true,
+      "top_similarity": 0.41817080148520624,
+      "first_hit_rank": 8,
+      "judge_score": null
+    },
+    {
+      "id": "ea-02",
+      "category": "english_on_arabic",
+      "language": "en",
+      "arabic_pdf": true,
+      "top_similarity": 0.25795866985116,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "ea-03",
+      "category": "english_on_arabic",
+      "language": "en",
+      "arabic_pdf": true,
+      "top_similarity": 0.2058187881766833,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "ea-04",
+      "category": "english_on_arabic",
+      "language": "en",
+      "arabic_pdf": true,
+      "top_similarity": 0.2926996928662059,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "ea-05",
+      "category": "english_on_arabic",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.46000348220794707,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "cd-01",
+      "category": "cross_document",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.7047757881219368,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "cd-02",
+      "category": "cross_document",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.48550751508599765,
+      "first_hit_rank": 4,
+      "judge_score": null
+    },
+    {
+      "id": "cd-03",
+      "category": "cross_document",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5744390642319354,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "cd-04",
+      "category": "cross_document",
+      "language": "en",
+      "arabic_pdf": true,
+      "top_similarity": 0.3690371970925441,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "cd-05",
+      "category": "cross_document",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.4668529113905079,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "un-01",
+      "category": "unanswerable",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5809666595577108,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "un-02",
+      "category": "unanswerable",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5148263524967424,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "un-03",
+      "category": "unanswerable",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5331875675845721,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "un-04",
+      "category": "unanswerable",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.49713349879380675,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "un-05",
+      "category": "unanswerable",
+      "language": "ar",
+      "arabic_pdf": false,
+      "top_similarity": 0.5880870604119284,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "un-06",
+      "category": "unanswerable",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.29706073967983593,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "un-07",
+      "category": "unanswerable",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.19632650732591794,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "in-01",
+      "category": "injection",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.7628415869342852,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "in-02",
+      "category": "injection",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6616301814072753,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "in-03",
+      "category": "injection",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.7215270596721605,
+      "first_hit_rank": 1,
+      "judge_score": null
+    }
+  ]
+}

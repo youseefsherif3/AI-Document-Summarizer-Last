@@ -148,7 +148,8 @@ class Settings:
 
 def make_settings(mode: str, answer_model: str | None, judge_model: str | None,
                   corpus: list[CorpusFile], excluded: list[dict] | None = None,
-                  exclusion_reason: str | None = None) -> Settings:
+                  exclusion_reason: str | None = None,
+                  retrieval: str | None = None) -> Settings:
     answers = mode == "answers"
     excluded = excluded or []
     return Settings(
@@ -156,7 +157,7 @@ def make_settings(mode: str, answer_model: str | None, judge_model: str | None,
         answer_model=answer_model if answers else None,
         judge_model=judge_model if answers else None,
         embedding_model=EMBEDDING_MODEL,
-        retrieval_mode="vector",
+        retrieval_mode=retrieval or chat.retrieval_mode(),
         top_k=chat.RETRIEVAL_TOP_K,
         min_similarity=chat.min_similarity(),
         chunk_max_tokens=CHUNK_MAX_TOKENS,
@@ -479,8 +480,9 @@ class UsageCollector(logging.Handler):
 async def evaluate_question(item: dict, vector: list[float], settings: Settings,
                             answer_fn: AnswerFn, judge_fn: JudgeFn, sleep: SleepFn,
                             pace_seconds: float) -> dict:
-    matches = database.search_chunks(
-        vector, k=settings.top_k, min_similarity=settings.min_similarity
+    matches = chat.find_matches(
+        item["question"], vector, k=settings.top_k, mode=settings.retrieval_mode,
+        threshold=settings.min_similarity,
     )
     retrieved = [
         scoring.Retrieved(rank, match.filename, match.page_number, match.similarity)
@@ -913,6 +915,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-arabic-pdf", action="store_true",
                         help="leave out the questions sourced from the two Arabic PDFs "
                              "(known to fail); the report lists them")
+    parser.add_argument("--retrieval-mode", choices=["vector", "hybrid"],
+                        help="override RETRIEVAL_MODE (default: vector)")
     return parser.parse_args(argv)
 
 
@@ -925,7 +929,8 @@ async def main_async(args: argparse.Namespace) -> int:
     judge_model = args.judge_model or os.getenv("OPENROUTER_JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
     warnings = check_models(answer_model, judge_model) if args.mode == "answers" else []
     settings = make_settings(args.mode, answer_model, judge_model, corpus,
-                             excluded=excluded, exclusion_reason=ARABIC_PDF_EXCLUSION_REASON)
+                             excluded=excluded, exclusion_reason=ARABIC_PDF_EXCLUSION_REASON,
+                             retrieval=args.retrieval_mode)
     if excluded:
         print(f"Excluding {len(excluded)} Arabic-PDF questions: "
               f"{', '.join(q['id'] for q in excluded)}\n")
