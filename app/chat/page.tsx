@@ -12,28 +12,51 @@ import {
   UserRound,
   LoaderCircle,
   AlertCircle,
+  Square,
 } from "lucide-react";
 
+import AnswerText, { citedSourceNumbers } from "@/components/chat/AnswerText";
+import DocumentPicker from "@/components/chat/DocumentPicker";
+import SourceList from "@/components/chat/SourceList";
 import MainLayout from "@/components/layout/MainLayout";
 import { useDocumentsContext } from "@/context/DocumentsContext";
+import { isAbortError, streamChatAnswer } from "@/lib/chat-api";
 import { ALLOWED_EXTENSIONS, MAX_CONCURRENT_UPLOADS } from "@/lib/constants";
 import type { ChatMessage } from "@/types/chat";
+
+// Earlier messages sent with each question, for follow-ups (the backend keeps the same number).
+const HISTORY_MESSAGES = 6;
 
 export default function ChatPage() {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [isThinking, setIsThinking] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const [sentDocumentIds, setSentDocumentIds] = useState<Set<string>>(
     new Set(),
   );
+  // Empty = search all documents.
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<number[]>([]);
+  const [activeSource, setActiveSource] = useState<{
+    messageId: string;
+    n: number;
+  } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const { documents, error, addFiles, removeDocument, remainingSlots } =
     useDocumentsContext();
 
   const errorMessages = error ? error.split("\n").filter(Boolean) : [];
+
+  // Documents saved in the database can be searched.
+  const searchableDocuments = documents
+    .filter((document) => document.status === "completed" && document.backendId)
+    .map((document) => ({ id: document.backendId as number, name: document.name }));
+  const searchableIds = new Set(searchableDocuments.map((document) => document.id));
+  // Drop selections whose document was deleted, so the request never names a missing one.
+  const validSelectedIds = selectedDocumentIds.filter((id) => searchableIds.has(id));
 
   // Automatically scroll to the latest message
   useEffect(() => {
@@ -41,7 +64,77 @@ export default function ChatPage() {
       behavior: "smooth",
       block: "end",
     });
-  }, [messages, isThinking]);
+  }, [messages]);
+
+  // Stop a running answer when leaving the page.
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const updateMessage = (id: string, update: (current: ChatMessage) => ChatMessage) =>
+    setMessages((current) =>
+      current.map((item) => (item.id === id ? update(item) : item)),
+    );
+
+  // Ask the backend and stream the answer into a new assistant message.
+  const askQuestion = async (question: string) => {
+    const history = messages
+      .filter((item) => item.status !== "error" && item.content.trim())
+      .slice(-HISTORY_MESSAGES)
+      .map((item) => ({ role: item.role, content: item.content }));
+
+    const answerId = crypto.randomUUID();
+    setMessages((current) => [
+      ...current,
+      { id: crypto.randomUUID(), role: "user", content: question, createdAt: new Date() },
+      {
+        id: answerId,
+        role: "assistant",
+        content: "",
+        createdAt: new Date(),
+        sources: [],
+        status: "streaming",
+      },
+    ]);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setIsStreaming(true);
+
+    try {
+      await streamChatAnswer(
+        {
+          message: question,
+          history,
+          documentIds: validSelectedIds,
+          signal: controller.signal,
+        },
+        {
+          onSources: (sources) => updateMessage(answerId, (item) => ({ ...item, sources })),
+          // Append to the combined text; citations are rendered from that, not per event.
+          onDelta: (text) =>
+            updateMessage(answerId, (item) => ({ ...item, content: item.content + text })),
+        },
+      );
+      updateMessage(answerId, (item) => ({ ...item, status: "done" }));
+    } catch (requestError) {
+      if (isAbortError(requestError)) {
+        updateMessage(answerId, (item) => ({ ...item, status: "stopped" }));
+      } else {
+        updateMessage(answerId, (item) => ({
+          ...item,
+          status: "error",
+          error:
+            requestError instanceof Error
+              ? requestError.message
+              : "Something went wrong while answering.",
+        }));
+      }
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+      setIsStreaming(false);
+    }
+  };
+
+  const stopAnswer = () => abortRef.current?.abort();
 
   // Handle file selection
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -49,11 +142,17 @@ export default function ChatPage() {
     event.target.value = "";
   };
 
-  // Send message or document summaries
+  // Ask a typed question, or (with an empty input) post the ready document summaries.
   const handleSend = () => {
     const content = message.trim();
 
-    if (isThinking) return;
+    if (isStreaming) return;
+
+    if (content) {
+      setMessage("");
+      void askQuestion(content);
+      return;
+    }
 
     // Find completed documents whose summaries haven't been sent yet.
     const readyDocuments = documents.filter(
@@ -63,67 +162,34 @@ export default function ChatPage() {
         !sentDocumentIds.has(document.id),
     );
 
-    // Do not send an empty message if there are no ready summaries.
-    if (!content && readyDocuments.length === 0) return;
+    if (readyDocuments.length === 0) return;
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: content
-        ? content
-        : `Please summarize: ${readyDocuments.map((doc) => doc.name).join(", ")}`,
+      content: `Please summarize: ${readyDocuments.map((doc) => doc.name).join(", ")}`,
       createdAt: new Date(),
     };
 
-    setMessages((current) => [...current, userMessage]);
-    setMessage("");
-
     // Send ready document summaries directly into the conversation.
-    if (readyDocuments.length > 0) {
-      const summaryContent = readyDocuments
-        .map(
-          (document) =>
-            `Summary of ${document.name}\n\n${document.summary}`,
-        )
-        .join("\n\n--------------------\n\n");
+    const summaryContent = readyDocuments
+      .map((document) => `Summary of ${document.name}\n\n${document.summary}`)
+      .join("\n\n--------------------\n\n");
 
-      const aiMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: summaryContent,
-        createdAt: new Date(),
-      };
+    const aiMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: summaryContent,
+      createdAt: new Date(),
+    };
 
-      setMessages((current) => [...current, aiMessage]);
+    setMessages((current) => [...current, userMessage, aiMessage]);
 
-      setSentDocumentIds((current) => {
-        const updated = new Set(current);
-
-        readyDocuments.forEach((document) => {
-          updated.add(document.id);
-        });
-
-        return updated;
-      });
-
-      return;
-    }
-
-    // Keep the existing demo response for text-only messages.
-    setIsThinking(true);
-
-    setTimeout(() => {
-      const aiMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content:
-          "Thanks for your message! I'm currently running in demo mode. Once the chat AI backend is connected, I'll be able to analyze your uploaded documents and answer your questions.",
-        createdAt: new Date(),
-      };
-
-      setMessages((current) => [...current, aiMessage]);
-      setIsThinking(false);
-    }, 1200);
+    setSentDocumentIds((current) => {
+      const updated = new Set(current);
+      readyDocuments.forEach((document) => updated.add(document.id));
+      return updated;
+    });
   };
 
   const hasStartedChat = messages.length > 0;
@@ -184,6 +250,11 @@ export default function ChatPage() {
               <div className="mx-auto w-full max-w-4xl space-y-8 py-4">
                 {messages.map((chatMessage) => {
                   const isUser = chatMessage.role === "user";
+                  const isAnswer = !isUser && chatMessage.sources !== undefined;
+                  const sources = chatMessage.sources ?? [];
+                  const answerStreaming = chatMessage.status === "streaming";
+                  const activeN =
+                    activeSource?.messageId === chatMessage.id ? activeSource.n : null;
 
                   return (
                     <div
@@ -205,9 +276,66 @@ export default function ChatPage() {
                             : "bg-[#111827] text-gray-200"
                         }`}
                       >
-                        <p className="whitespace-pre-wrap text-sm leading-7">
-                          {chatMessage.content}
-                        </p>
+                        {isAnswer ? (
+                          <>
+                            {chatMessage.content ? (
+                              <AnswerText
+                                text={chatMessage.content}
+                                sources={sources}
+                                activeSource={activeN}
+                                onCite={(n) =>
+                                  setActiveSource({ messageId: chatMessage.id, n })
+                                }
+                              />
+                            ) : answerStreaming ? (
+                              <p className="flex items-center gap-2 text-sm text-gray-400">
+                                <LoaderCircle
+                                  size={16}
+                                  className="animate-spin text-violet-400"
+                                />
+                                Searching your documents…
+                              </p>
+                            ) : null}
+
+                            {chatMessage.status === "stopped" && (
+                              <p className="mt-2 text-xs text-gray-500">
+                                {chatMessage.content
+                                  ? "Stopped. The answer is incomplete."
+                                  : "Stopped before an answer arrived."}
+                              </p>
+                            )}
+
+                            {chatMessage.status === "error" && (
+                              <div className="mt-2 flex items-start gap-2 rounded-xl border border-red-500/20 bg-red-500/5 px-3 py-2">
+                                <AlertCircle
+                                  size={16}
+                                  className="mt-0.5 shrink-0 text-red-400"
+                                />
+                                <p className="text-sm text-red-300">
+                                  {chatMessage.error}
+                                </p>
+                              </div>
+                            )}
+
+                            <SourceList
+                              messageId={chatMessage.id}
+                              sources={sources}
+                              citedNumbers={citedSourceNumbers(
+                                chatMessage.content,
+                                sources,
+                              )}
+                              activeSource={activeN}
+                              onSelect={(n) =>
+                                setActiveSource({ messageId: chatMessage.id, n })
+                              }
+                              isStreaming={answerStreaming}
+                            />
+                          </>
+                        ) : (
+                          <p className="whitespace-pre-wrap text-sm leading-7">
+                            {chatMessage.content}
+                          </p>
+                        )}
                       </div>
 
                       {isUser && (
@@ -218,22 +346,6 @@ export default function ChatPage() {
                     </div>
                   );
                 })}
-
-                {/* Thinking Indicator */}
-                {isThinking && (
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-500/10">
-                      <Bot size={19} className="text-violet-400" />
-                    </div>
-
-                    <div className="rounded-xl bg-[#111827] px-4 py-3">
-                      <LoaderCircle
-                        size={19}
-                        className="animate-spin text-violet-400"
-                      />
-                    </div>
-                  </div>
-                )}
 
                 <div ref={messagesEndRef} />
               </div>
@@ -300,6 +412,14 @@ export default function ChatPage() {
           </div>
         )}
 
+        {/* Which documents to search */}
+        <DocumentPicker
+          documents={searchableDocuments}
+          selectedIds={validSelectedIds}
+          onChange={setSelectedDocumentIds}
+          disabled={isStreaming}
+        />
+
         {/* Message Input */}
         <div
           className={`shrink-0 rounded-2xl border border-white/10 bg-[#111827] transition-all duration-300 ${
@@ -354,16 +474,27 @@ export default function ChatPage() {
               </button>
             </div>
 
-            {/* Send Button */}
-            <button
-              type="button"
-              onClick={handleSend}
-              disabled={!canSend || isThinking}
-              className="flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {message.trim() ? "Send" : "Send Summary"}
-              <Send size={16} />
-            </button>
+            {/* Send / Stop Button */}
+            {isStreaming ? (
+              <button
+                type="button"
+                onClick={stopAnswer}
+                className="flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-gray-200 transition hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-300"
+              >
+                Stop
+                <Square size={14} className="fill-current" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSend}
+                disabled={!canSend}
+                className="flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {message.trim() ? "Send" : "Send Summary"}
+                <Send size={16} />
+              </button>
+            )}
           </div>
         </div>
 
