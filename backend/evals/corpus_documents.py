@@ -60,7 +60,8 @@ NORTHWIND_HANDBOOK = CorpusDocument(
             "Remote work. Employees may work remotely up to 3 days per week. Tuesday is the "
             "team day, when everyone works from the office.",
             "Equipment. Every employee receives a laptop and an equipment budget of "
-            "EUR 1,200 every three years for monitors, chairs and other home-office items.",
+            "EUR 1,200 every three years for monitors, chairs and other home-office items. "
+            "Laptops are replaced every 3 years.",
             ("h", "Business travel"),
             "All business travel must be approved in the travel tool before anything is "
             "booked. For trips shorter than 500 km, employees must take the train, unless the "
@@ -107,7 +108,8 @@ BRIGHTWATER_POLICIES = CorpusDocument(
             "provided their manager has approved it in advance. Fridays are office days for "
             "all warehouse planning teams.",
             ("h", "Equipment and expenses"),
-            "Equipment. Office staff receive an equipment budget of EUR 900 every four years.",
+            "Equipment. Office staff receive an equipment budget of EUR 900 every four years. "
+            "Lost or stolen laptops must be reported to the IT service desk within 48 hours.",
             "Travel. Trips shorter than 300 km must be made by train. Hotel costs are covered "
             "up to EUR 140 per night, and the daily meal allowance is EUR 38.",
             "Approvals. Any purchase above EUR 1,500 needs approval from the finance team.",
@@ -146,7 +148,7 @@ NORTHWIND_SECURITY = CorpusDocument(
             ),
             ("h", "Devices"),
             "Laptops must use full-disk encryption. A lost or stolen device must be reported "
-            "within 1 hour.",
+            "within 1 hour. Company laptops are replaced every 4 years.",
         ],
     ],
 )

@@ -1,0 +1,215 @@
+{
+  "run_id": "20261109-192020-retrieval",
+  "started_at": "2026-11-09T19:20:20+00:00",
+  "finished_at": "2026-11-09T19:20:23+00:00",
+  "settings": {
+    "mode": "retrieval",
+    "answer_model": null,
+    "judge_model": null,
+    "embedding_model": "openai/text-embedding-3-small",
+    "retrieval_mode": "hybrid",
+    "top_k": 8,
+    "min_similarity": 0.0,
+    "chunk_max_tokens": 800,
+    "chunk_overlap_tokens": 120,
+    "questions_sha": "e6f9b784e8d46f4d",
+    "corpus_sha": "7ef608185dc75d86",
+    "system_prompt_sha": "b55447865df8697e",
+    "judge_prompt_version": null,
+    "excluded_questions": [],
+    "exclusion_reason": null,
+    "categories": [
+      "conflict"
+    ]
+  },
+  "partial": null,
+  "evaluated_questions": 3,
+  "total_questions": 66,
+  "excluded": {
+    "reason": null,
+    "questions": []
+  },
+  "estimate": [
+    {
+      "part": "embeddings",
+      "requests": 1,
+      "input_tokens": 415,
+      "output_tokens": 0,
+      "cost_usd": 8.3e-06,
+      "note": "17 of 22 texts already cached"
+    }
+  ],
+  "extraction": [
+    {
+      "document": "northwind_handbook.pdf",
+      "format": "pdf",
+      "language": "en",
+      "facts": 2,
+      "found": 2,
+      "rate": 1.0
+    },
+    {
+      "document": "brightwater_policies.pdf",
+      "format": "pdf",
+      "language": "en",
+      "facts": 1,
+      "found": 1,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_security_policy.docx",
+      "format": "docx",
+      "language": "en",
+      "facts": 1,
+      "found": 1,
+      "rate": 1.0
+    },
+    {
+      "document": "brightwater_it_rules.docx",
+      "format": "docx",
+      "language": "en",
+      "facts": 1,
+      "found": 1,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_q3_report.txt",
+      "format": "txt",
+      "language": "en",
+      "facts": 1,
+      "found": 1,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_onboarding_memo.txt",
+      "format": "txt",
+      "language": "en",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    },
+    {
+      "document": "waha_library_ar.pdf",
+      "format": "pdf",
+      "language": "ar",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    },
+    {
+      "document": "nursin_port_ar.pdf",
+      "format": "pdf",
+      "language": "ar",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    },
+    {
+      "document": "nakheel_library_ar.txt",
+      "format": "txt",
+      "language": "ar",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    }
+  ],
+  "retrieval": {
+    "all": {
+      "questions": 3,
+      "hit@1": 0.6666666666666666,
+      "hit@3": 1.0,
+      "hit@8": 1.0,
+      "mrr": 0.7777777777777778,
+      "all_sources_found": 1.0
+    },
+    "without_arabic_pdf": {
+      "questions": 3,
+      "hit@1": 0.6666666666666666,
+      "hit@3": 1.0,
+      "hit@8": 1.0,
+      "mrr": 0.7777777777777778,
+      "all_sources_found": 1.0
+    },
+    "by_category": {
+      "conflict": {
+        "questions": 3,
+        "hit@1": 0.6666666666666666,
+        "hit@3": 1.0,
+        "hit@8": 1.0,
+        "mrr": 0.7777777777777778,
+        "all_sources_found": 1.0
+      }
+    },
+    "by_language": {
+      "en": {
+        "questions": 3,
+        "hit@1": 0.6666666666666666,
+        "hit@3": 1.0,
+        "hit@8": 1.0,
+        "mrr": 0.7777777777777778,
+        "all_sources_found": 1.0
+      },
+      "ar": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      }
+    }
+  },
+  "top_similarity": {
+    "answerable": {
+      "mean": 0.5050745417501236,
+      "min": 0.4219841163356305,
+      "max": 0.666164752483241
+    },
+    "unanswerable": null
+  },
+  "answers": {
+    "all": {},
+    "without_arabic_pdf": {},
+    "by_category": {
+      "conflict": {}
+    }
+  },
+  "actual_cost": {
+    "embedding": {
+      "calls": 4,
+      "cost_usd": 7.26e-06,
+      "unknown_cost": 0,
+      "prompt_tokens": 363,
+      "completion_tokens": 0
+    }
+  },
+  "questions": [
+    {
+      "id": "cf-01",
+      "category": "conflict",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.666164752483241,
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "cf-02",
+      "category": "conflict",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.42707475643149917,
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "cf-03",
+      "category": "conflict",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.4219841163356305,
+      "first_hit_rank": 1,
+      "judge_score": null
+    }
+  ]
+}
