@@ -16,8 +16,16 @@ import { upload as uploadBlob } from "@vercel/blob/client";
 import {
   ALLOWED_EXTENSIONS,
   MAX_FILE_SIZE,
-  MAX_FILES_PER_SESSION,
+  MAX_CONCURRENT_UPLOADS,
 } from "@/lib/constants";
+
+const UPLOAD_LIMIT_MESSAGE = `You can upload up to ${MAX_CONCURRENT_UPLOADS} files at a time. Wait for the current uploads to finish.`;
+
+// Uploads that are still running and use one of the concurrent upload slots.
+const isUploading = (document: UploadedDocument) =>
+  document.status === "pending" ||
+  document.status === "extracting" ||
+  document.status === "summarizing";
 
 interface DocumentsContextType {
   documents: UploadedDocument[];
@@ -65,7 +73,9 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     if (!apiUrl) throw new Error("Backend API URL is not configured.");
     const response = await fetch(`${apiUrl}/documents`, { cache: "no-store" });
     if (!response.ok) throw new Error("Failed to retrieve saved documents.");
-    setDocuments(mapBackendDocuments(await response.json()));
+    const saved = mapBackendDocuments(await response.json());
+    // Keep uploads that are still running; they are not in the database yet.
+    setDocuments((current) => [...saved, ...current.filter(isUploading)]);
   };
 
   // Restore saved documents when the application starts.
@@ -244,18 +254,17 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     const newDocuments: UploadedDocument[] = [];
     const rejectedMessages: string[] = [];
 
-    const remaining = MAX_FILES_PER_SESSION - documents.length;
+    const remaining =
+      MAX_CONCURRENT_UPLOADS - documents.filter(isUploading).length;
 
     if (remaining <= 0) {
-      setError("You can upload a maximum of 3 files per session.");
+      setError(UPLOAD_LIMIT_MESSAGE);
       return;
     }
 
     for (const file of files) {
       if (newDocuments.length >= remaining) {
-        rejectedMessages.push(
-          "You can upload a maximum of 3 files per session.",
-        );
+        rejectedMessages.push(UPLOAD_LIMIT_MESSAGE);
         break;
       }
 
@@ -380,7 +389,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
         error,
         remainingSlots: Math.max(
           0,
-          MAX_FILES_PER_SESSION - documents.length,
+          MAX_CONCURRENT_UPLOADS - documents.filter(isUploading).length,
         ),
         addFiles,
         removeDocument,

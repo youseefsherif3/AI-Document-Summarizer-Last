@@ -1,4 +1,6 @@
-export const MAX_FILES_PER_SESSION = 3;
+// How many files can upload and summarize at the same time.
+// Stored documents are not limited.
+export const MAX_CONCURRENT_UPLOADS = 3;
 
 export const ALLOWED_FILE_TYPES = {
   PDF: "application/pdf",

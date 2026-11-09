@@ -16,7 +16,7 @@ import {
 
 import MainLayout from "@/components/layout/MainLayout";
 import { useDocumentsContext } from "@/context/DocumentsContext";
-import { ALLOWED_EXTENSIONS } from "@/lib/constants";
+import { ALLOWED_EXTENSIONS, MAX_CONCURRENT_UPLOADS } from "@/lib/constants";
 import type { ChatMessage } from "@/types/chat";
 
 export default function ChatPage() {
@@ -347,7 +347,9 @@ export default function ChatPage() {
                 <Paperclip size={18} />
                 Attach files
                 <span className="text-xs text-gray-600">
-                  ({remainingSlots} left)
+                  {remainingSlots > 0
+                    ? `(${remainingSlots} of ${MAX_CONCURRENT_UPLOADS} slots free)`
+                    : "(wait for uploads to finish)"}
                 </span>
               </button>
             </div>

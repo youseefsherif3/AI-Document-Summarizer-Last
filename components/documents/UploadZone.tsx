@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
-import { ALLOWED_EXTENSIONS, MAX_FILES_PER_SESSION } from "@/lib/constants";
+import { ALLOWED_EXTENSIONS, MAX_CONCURRENT_UPLOADS } from "@/lib/constants";
 
 interface UploadZoneProps {
   onFilesSelected: (files: File[]) => void;
@@ -11,7 +11,7 @@ interface UploadZoneProps {
 
 export default function UploadZone({
   onFilesSelected,
-  remainingSlots = MAX_FILES_PER_SESSION,
+  remainingSlots = MAX_CONCURRENT_UPLOADS,
 }: UploadZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -88,8 +88,12 @@ export default function UploadZone({
       </div>
 
       <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
-        <span>Maximum 3 files per session</span>
-        <span>{remainingSlots} slots remaining</span>
+        <span>Up to {MAX_CONCURRENT_UPLOADS} files at a time</span>
+        <span>
+          {remainingSlots > 0
+            ? `${remainingSlots} of ${MAX_CONCURRENT_UPLOADS} upload slots free`
+            : "Wait for current uploads to finish"}
+        </span>
       </div>
     </section>
   );
