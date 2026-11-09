@@ -25,7 +25,7 @@ export default function DocumentPicker({
 
   const allSelected = selectedIds.length === 0;
   const chipClass = (active: boolean) =>
-    `flex max-w-56 items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+    `flex max-w-44 shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-56 ${
       active
         ? "border-violet-500/50 bg-violet-500/15 text-violet-200"
         : "border-white/10 bg-[#111827] text-gray-400 hover:border-violet-500/30 hover:text-white"
@@ -39,13 +39,13 @@ export default function DocumentPicker({
     );
 
   return (
-    <div className="mt-3 flex shrink-0 items-start gap-2">
+    <div className="mt-3 flex min-w-0 shrink-0 items-start gap-2">
       <span className="mt-1 flex shrink-0 items-center gap-1.5 text-xs text-gray-500">
         <Files size={14} />
         Search in:
       </span>
 
-      <div className="flex max-h-20 flex-wrap gap-2 overflow-y-auto">
+      <div className="flex min-w-0 gap-2 overflow-x-auto pb-1 lg:max-h-20 lg:flex-wrap lg:overflow-y-auto lg:pb-0">
         <button
           type="button"
           disabled={disabled}

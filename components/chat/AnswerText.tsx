@@ -47,7 +47,7 @@ export default function AnswerText({ text, sources, activeSource, onCite }: Answ
         onClick={() => onCite(n)}
         title={`${source.filename}, ${location}`}
         aria-label={`Source ${n}: ${source.filename}, ${location}`}
-        className={`mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1.5 align-text-top text-[11px] font-semibold transition ${
+        className={`relative mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1.5 align-text-top text-[11px] font-semibold transition after:absolute after:-inset-1.5 after:content-[''] ${
           activeSource === n
             ? "bg-violet-500 text-white"
             : "bg-violet-500/15 text-violet-300 hover:bg-violet-500/30"
@@ -60,5 +60,7 @@ export default function AnswerText({ text, sources, activeSource, onCite }: Answ
   }
   parts.push(text.slice(last));
 
-  return <p className="whitespace-pre-wrap text-sm leading-7">{parts}</p>;
+  return (
+    <p className="whitespace-pre-wrap text-sm leading-7 [overflow-wrap:anywhere]">{parts}</p>
+  );
 }

@@ -27,7 +27,7 @@ export default function UploadZone({
   };
 
   return (
-    <section className="rounded-2xl border border-white/10 bg-[#111827] p-6">
+    <section className="rounded-2xl border border-white/10 bg-[#111827] p-4 sm:p-6">
       <div className="mb-5">
         <h2 className="text-lg font-semibold text-white">Upload Documents</h2>
         <p className="mt-1 text-sm text-gray-500">
@@ -46,7 +46,7 @@ export default function UploadZone({
           setIsDragging(false);
           handleFiles(event.dataTransfer.files);
         }}
-        className={`flex min-h-64 flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition ${
+        className={`flex min-h-56 flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-8 text-center transition sm:min-h-64 sm:px-6 sm:py-10 ${
           isDragging
             ? "border-violet-500 bg-violet-500/10"
             : "border-white/15 bg-[#0B1120] hover:border-violet-500/50"
@@ -87,7 +87,7 @@ export default function UploadZone({
         </p>
       </div>
 
-      <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-gray-500">
         <span>Up to {MAX_CONCURRENT_UPLOADS} files at a time</span>
         <span>
           {remainingSlots > 0

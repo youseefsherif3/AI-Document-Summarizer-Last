@@ -61,7 +61,7 @@ export default function SourceList({
               <button
                 type="button"
                 onClick={() => onSelect(source.n)}
-                className={`w-full rounded-xl border p-3 text-left transition ${
+                className={`w-full rounded-xl border p-2.5 text-left transition sm:p-3 ${
                   isActive
                     ? "border-violet-500/60 bg-violet-500/10"
                     : "border-white/10 bg-[#0B1120] hover:border-violet-500/30"
@@ -76,14 +76,14 @@ export default function SourceList({
                     {source.n}
                   </span>
                   <FileText size={14} className="shrink-0 text-violet-400" />
-                  <span className="truncate text-xs font-medium text-gray-200">
+                  <span className="min-w-0 truncate text-xs font-medium text-gray-200">
                     {source.filename}
                   </span>
                   <span className="shrink-0 text-xs text-gray-500">
                     {source.page != null ? `p. ${source.page}` : "no page"}
                   </span>
                 </div>
-                <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-gray-400">
+                <p className="mt-1.5 line-clamp-3 text-xs leading-5 text-gray-400 [overflow-wrap:anywhere] sm:line-clamp-2">
                   {source.snippet}
                 </p>
               </button>

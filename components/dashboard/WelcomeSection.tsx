@@ -2,13 +2,13 @@ import { Sparkles } from "lucide-react";
 
 export default function WelcomeSection() {
   return (
-    <section className="mb-8">
+    <section className="mb-6 sm:mb-8">
       <div className="flex items-center gap-2 text-sm text-violet-400">
         <Sparkles size={16} />
         <span>AI-powered workspace</span>
       </div>
 
-      <h1 className="mt-3 text-3xl font-bold tracking-tight text-white">
+      <h1 className="mt-3 text-2xl font-bold tracking-tight text-white sm:text-3xl">
         Welcome back!
       </h1>
 
