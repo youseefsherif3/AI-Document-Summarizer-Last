@@ -25,6 +25,7 @@ from app.services.summarizer import (
     summarize_text,
     AIRateLimitError,
     AIServiceError,
+    AIServiceNotConfiguredError,
     stream_summary,
 )
 
@@ -175,6 +176,9 @@ async def upload_document(file: UploadFile = File(...)):
     except ConnectionError as error:
         raise HTTPException(status_code=503, detail=str(error))
 
+    except AIServiceNotConfiguredError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+
     except AIRateLimitError as error:
         raise HTTPException(status_code=429, detail=str(error))
 
@@ -302,6 +306,8 @@ async def upload_document_stream(file: UploadFile = File(...)):
             yield _sse({"type": "error", "status": 504, "message": str(error)})
         except ConnectionError as error:
             yield _sse({"type": "error", "status": 503, "message": str(error)})
+        except AIServiceNotConfiguredError as error:
+            yield _sse({"type": "error", "status": 503, "message": str(error)})
         except AIRateLimitError as error:
             yield _sse({"type": "error", "status": 429, "message": str(error)})
         except AIServiceError as error:
@@ -396,6 +402,8 @@ async def upload_document_stream_from_blob(upload: BlobSummaryRequest):
         except TimeoutError as error:
             yield _sse({"type": "error", "status": 504, "message": str(error)})
         except ConnectionError as error:
+            yield _sse({"type": "error", "status": 503, "message": str(error)})
+        except AIServiceNotConfiguredError as error:
             yield _sse({"type": "error", "status": 503, "message": str(error)})
         except AIRateLimitError as error:
             yield _sse({"type": "error", "status": 429, "message": str(error)})

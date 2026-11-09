@@ -13,7 +13,7 @@
   - services/summarizer.py: the only place that calls OpenRouter (OpenAI SDK, base_url=https://openrouter.ai/api/v1)
   - database.py: SQLAlchemy Core, one `documents` table. Postgres (Neon) when DATABASE_URL is set, SQLite otherwise
 - Streaming uses SSE events: {"type": "delta" | "done" | "error", ...}. A document is saved only after the stream finishes successfully.
-- Provider errors are mapped: TimeoutError→504, ConnectionError→503, AIRateLimitError→429, AIServiceError→502
+- Provider errors are mapped: TimeoutError→504, ConnectionError→503, AIServiceNotConfiguredError (OPENROUTER_API_KEY missing)→503, AIRateLimitError→429, AIServiceError→502
 - The chat page does NOT call the model yet; it only displays upload summaries.
 
 ## In progress: Phase 2 (RAG)

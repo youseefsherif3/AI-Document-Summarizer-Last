@@ -1,5 +1,8 @@
 
+import logging
 import os
+from functools import cache
+from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import (
@@ -11,20 +14,12 @@ from openai import (
     APIStatusError,
 )
 
-load_dotenv()
+# backend/.env, wherever the process was started from.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    timeout=30.0,
-)
+logger = logging.getLogger(__name__)
 
-async_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    timeout=60.0,
-)
-
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
 
 
@@ -36,13 +31,45 @@ class AIServiceError(Exception):
     """Raised when the AI provider returns an API error."""
 
 
+class AIServiceNotConfiguredError(Exception):
+    """Raised when OPENROUTER_API_KEY is not set."""
+
+
+def _require_api_key() -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        logger.error("OPENROUTER_API_KEY is not set; cannot call the AI service.")
+        raise AIServiceNotConfiguredError("AI service is not configured.")
+    return api_key
+
+
+# Clients are created on first use so importing this module (e.g. in tests)
+# does not require OPENROUTER_API_KEY. A failed key check is not cached.
+@cache
+def _get_client() -> OpenAI:
+    return OpenAI(
+        base_url=OPENROUTER_BASE_URL,
+        api_key=_require_api_key(),
+        timeout=30.0,
+    )
+
+
+@cache
+def _get_async_client() -> AsyncOpenAI:
+    return AsyncOpenAI(
+        base_url=OPENROUTER_BASE_URL,
+        api_key=_require_api_key(),
+        timeout=60.0,
+    )
+
+
 async def stream_summary(text: str):
     """Yield summary text as the provider generates it."""
     if not text.strip():
         raise ValueError("Cannot summarize empty text.")
 
     try:
-        stream = await async_client.chat.completions.create(
+        stream = await _get_async_client().chat.completions.create(
             model=MODEL,
             messages=[
                 {
@@ -87,7 +114,7 @@ def summarize_text(text: str) -> str:
         raise ValueError("Cannot summarize empty text.")
 
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model=MODEL,
             messages=[
                 {

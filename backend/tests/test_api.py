@@ -3,11 +3,13 @@ import asyncio
 from io import BytesIO
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.main import app
 import app.main as main
+import app.services.summarizer as summarizer
 
 
 def test_health_check():
@@ -350,3 +352,48 @@ def test_upload_returns_502_when_ai_api_fails(monkeypatch):
     assert response.json() == {
         "detail": "The AI service returned an API error: 402"
     }
+
+
+@pytest.fixture
+def missing_api_key(monkeypatch):
+    """Simulate a missing key, even if backend/.env provides a real one."""
+
+    def fail_if_client_created(*args, **kwargs):
+        raise AssertionError("An AI client must not be created without an API key.")
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(summarizer, "OpenAI", fail_if_client_created)
+    monkeypatch.setattr(summarizer, "AsyncOpenAI", fail_if_client_created)
+    summarizer._get_client.cache_clear()
+    summarizer._get_async_client.cache_clear()
+    yield
+    summarizer._get_client.cache_clear()
+    summarizer._get_async_client.cache_clear()
+
+
+def test_stream_upload_returns_503_when_ai_not_configured(missing_api_key, caplog):
+    with TestClient(app) as client:
+        response = client.post(
+            "/documents/upload/stream",
+            files={"file": ("test.txt", b"This is a test document.", "text/plain")},
+        )
+        documents = client.get("/documents").json()
+
+    assert response.status_code == 200
+    assert '"type": "error"' in response.text
+    assert '"status": 503' in response.text
+    assert "AI service is not configured." in response.text
+    assert documents == []
+    assert "OPENROUTER_API_KEY is not set" in caplog.text
+
+
+def test_upload_returns_503_when_ai_not_configured(missing_api_key, caplog):
+    with TestClient(app) as client:
+        response = client.post(
+            "/documents/upload",
+            files={"file": ("test.txt", b"This is a test document.", "text/plain")},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "AI service is not configured."}
+    assert "OPENROUTER_API_KEY is not set" in caplog.text
