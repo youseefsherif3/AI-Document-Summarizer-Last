@@ -1,6 +1,8 @@
 
+import asyncio
 import logging
 import os
+import time
 from functools import cache
 from pathlib import Path
 
@@ -12,6 +14,8 @@ from openai import (
     RateLimitError,
     APIStatusError,
 )
+
+from .usage import log_ai_usage
 
 # backend/.env, wherever the process was started from.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -58,8 +62,16 @@ async def stream_summary(text: str):
     if not text.strip():
         raise ValueError("Cannot summarize empty text.")
 
+    client = _get_async_client()
+    started_at = time.perf_counter()
+    # OpenRouter sends usage (tokens and cost) only in the last chunk, so a
+    # cancelled or failed stream is logged without it.
+    usage = None
+    model = MODEL
+    outcome = "error"
+
     try:
-        stream = await _get_async_client().chat.completions.create(
+        stream = await client.chat.completions.create(
             model=MODEL,
             messages=[
                 {
@@ -80,11 +92,18 @@ async def stream_summary(text: str):
 
         try:
             async for chunk in stream:
+                if getattr(chunk, "usage", None) is not None:
+                    usage = chunk.usage
+                model = getattr(chunk, "model", None) or model
                 content = chunk.choices[0].delta.content if chunk.choices else None
                 if isinstance(content, str) and content:
                     yield content
+            outcome = "ok"
         finally:
             await stream.close()
+    except (GeneratorExit, asyncio.CancelledError):
+        outcome = "cancelled"
+        raise
     except APITimeoutError as error:
         raise TimeoutError("The AI service took too long to respond.") from error
     except APIConnectionError as error:
@@ -97,3 +116,7 @@ async def stream_summary(text: str):
         raise AIServiceError(
             f"The AI service returned an API error: {error.status_code}"
         ) from error
+    finally:
+        log_ai_usage(
+            kind="summary", model=model, usage=usage, started_at=started_at, outcome=outcome
+        )

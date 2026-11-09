@@ -3,6 +3,7 @@ from io import BytesIO
 from contextlib import asynccontextmanager
 
 import json
+import logging
 import os
 import re
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -26,6 +27,14 @@ from app.services.summarizer import (
     AIServiceNotConfiguredError,
     stream_summary,
 )
+
+# Print this app's INFO logs (AI usage lines, errors) next to uvicorn's own logs.
+_app_logger = logging.getLogger("app")
+if not _app_logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s %(message)s"))
+    _app_logger.addHandler(_handler)
+_app_logger.setLevel(logging.INFO)
 
 
 @asynccontextmanager
