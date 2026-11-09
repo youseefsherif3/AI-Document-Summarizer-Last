@@ -153,6 +153,19 @@ and the eval judge.
     are matched as written.
 - The lists are merged with reciprocal rank fusion, `score = Σ 1 / (60 + rank)`, and the top 8 are
   kept. The code is in `backend/app/services/retrieval.py`.
+
+**Query rewriting for follow-up questions** (added after step 15; **off by default**):
+- With `QUERY_REWRITE_ENABLED=true` and earlier conversation, one model call
+  (`QUERY_REWRITE_MODEL`, falling back to the chat model) rewrites the last question into a
+  standalone one, and retrieval searches with that. The answer prompt still gets the user's own
+  question and the history. Without history, no call is made.
+- The call is usage-logged (`kind=rewrite`). It asks OpenRouter to turn reasoning off and allows
+  1500 tokens; an empty reply is an error (`EmptyRewriteError`).
+- If the call fails or returns nothing, chat logs a warning and searches with the original
+  question. The eval runner instead stops the run, so a failed rewrite can never look like a
+  result.
+- The code is in `backend/app/services/query_rewrite.py`; the eval runner takes
+  `--query-rewrite on` (free model `EVAL_REWRITE_MODEL`).
 - `RETRIEVAL_MODE=hybrid|vector` (default `hybrid`). `vector` switches back to vector-only search;
   the eval runner takes `--retrieval-mode` to compare the two.
 
@@ -270,7 +283,8 @@ and the eval judge.
 
 - **Done:** steps 1–8 and 10–13; step 14's eval runner and **retrieval baseline** (all 56
   questions); step 16 (decided, below); step 15 (hybrid search, finished on
-  `feature/phase2-improvements` after delivery, results below).
+  `feature/phase2-improvements` after delivery, results below); 8 follow-up eval questions and
+  query rewriting, built but **off by default** (results and decision below).
 - **Partial:** step 14's **answers baseline**: 2 of 42 questions evaluated (both scored 5/5 by
   the judge, with correct citations). The free OpenRouter endpoints were congested on delivery
   day: `google/gemma-4-31b-it:free` stopped after 1 question, and
@@ -284,6 +298,51 @@ and the eval judge.
   of the time with vector search (71% with hybrid), because look-alike documents rank higher.
 - **Phase 3:** step 9 (backfill script), CI, production rollout, and the known issues in
   CLAUDE.md (including Arabic PDF extraction).
+
+### Follow-up questions and query rewriting: results and decision (rewriting stays off)
+
+Eight follow-up questions (`follow_up` category, `fu-01`–`fu-08`) carry an earlier user question
+and answer; the last question only makes sense with them ("And what about Brightwater?", "Who
+owns the second one?", "Is it the same at the other company?"). Reports (retrieval mode, hybrid
+search, top 8): `backend/evals/reports/20261109-183940-follow-up-no-rewrite` (before) and
+`backend/evals/reports/20261109-190111-follow-up-rewrite` (after, rewriting with the free
+`nvidia/nemotron-3.5-lightning:free`, reasoning off).
+
+| Follow-up questions (8) | hit@1 | hit@3 | hit@8 | MRR |
+|---|---|---|---|---|
+| No rewriting | 38% | 50% | 62% | 0.455 |
+| With rewriting | 50% | 75% | 75% | 0.604 |
+
+| ID | Last question | Rewritten for search | Rank before → after |
+|---|---|---|---|
+| fu-01 | And what about Brightwater? | And what about Brightwater employees' paid annual leave? | not in top 8 → 2 |
+| fu-02 | And at Brightwater? | (returned unchanged) | not in top 8 → not in top 8 |
+| fu-03 | What are the company's core working hours? | What are Northwind Robotics' core working hours? | 2 → 1 |
+| fu-04 | Who owns the second one? | Who owns RouteWise? | 7 → 1 |
+| fu-05 | How quickly do incidents have to be reported there? | How quickly do incidents have to be reported to Northwind? | 1 → 1 |
+| fu-06 | Explain the last one. | Explain the Restricted data class. | 1 → 1 |
+| fu-07 | What do they expect for the next quarter? | What do they expect for Northwind's revenue in the next quarter after Q3 2026? | 1 → 3 |
+| fu-08 | Is it the same at the other company? | Is it the same at the other company as at Brightwater? | not in top 8 → not in top 8 |
+
+What this shows: without rewriting, retrieval only sees the last question, so it finds the
+company but not the topic, or neither. Good rewrites fix that (fu-04 jumps from 7th to 1st),
+but the small free model left fu-02 unchanged, rewrote fu-08 wrongly (it kept "the other
+company" and dropped the topic), and made fu-07 worse by adding words that match the Q3 results
+page instead of the outlook page. Eight questions is a small sample (one question moves each
+number by 12 points).
+
+How the measurement went wrong first: `google/gemma-4-26b-a4b-it:free` was rate-limited for
+minutes at a time. `nvidia/nemotron-3.5-lightning:free` then spent its whole reply on hidden
+reasoning (300 tokens, then 1500 even at low effort) and returned no text, and the first version
+of the code silently searched with the original question: that run's numbers were identical to
+the no-rewrite run, a fake result (the report was deleted). Since then an empty rewrite is an
+error, the eval stops on it, and the rewrite call turns reasoning off (about 12 tokens per
+rewrite).
+
+Decision: **query rewriting is built but off** (`QUERY_REWRITE_ENABLED=false`) until it is
+measured with the production chat model, which will rewrite better than a 3B-active free model
+but costs a paid call per follow-up question. That needs an estimate and your OK first. The eval
+runner's default rewrite model is `nvidia/nemotron-3.5-lightning:free` (Gemma 4 was too slow).
 
 ### Step 15 results and decision: hybrid by default, no Arabic normalization
 
@@ -388,8 +447,10 @@ None for now. These are decided at their steps:
 - **Reranking:** usually puts the most relevant chunks first and lets retrieval cast a wider net
   (20 instead of 8), but adds one more call per question: extra latency and cost, or a large local
   dependency. It is kept only if the step 17 reports show it helps.
-- **No query rewriting** in this phase. History is sent to the answer model only, and retrieval
-  uses the latest question. If the evals show follow-up questions fail, this can be added later.
+- **Query rewriting is built but off.** Without it, history goes to the answer model only and
+  retrieval searches with the latest question, which fails on follow-ups (hit@8 62% on the 8
+  follow-up questions). Turning it on adds one model call (latency and cost) to every follow-up
+  question; it stays off until it is measured with the production chat model.
 
 ## Verification (end to end, after step 17)
 

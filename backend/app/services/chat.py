@@ -1,6 +1,7 @@
 """Answer questions about the stored documents (RAG): retrieve, build the prompt, stream."""
 
 import asyncio
+import logging
 import os
 import re
 import time
@@ -14,9 +15,12 @@ from app.database import ChunkMatch, search_chunks
 
 from . import summarizer
 from .embeddings import embed_query
+from .query_rewrite import query_rewrite_enabled, query_rewrite_model, rewrite_question
 from .retrieval import hybrid_search, retrieval_mode
-from .summarizer import AIServiceError, _get_async_client, rate_limit_error
+from .summarizer import AIRateLimitError, AIServiceError, _get_async_client, rate_limit_error
 from .usage import log_ai_usage
+
+logger = logging.getLogger(__name__)
 
 RETRIEVAL_TOP_K = 8
 HISTORY_TURNS = 6  # previous messages sent along for follow-up questions
@@ -86,6 +90,7 @@ class PreparedAnswer:
     sources: list[Source]
     messages: list[dict]
     usage: dict | None = field(default=None)  # filled in after the answer has streamed
+    search_query: str | None = None  # the rewritten question used for retrieval, if any
 
 
 def sources_from_matches(matches: Sequence[ChunkMatch]) -> list[Source]:
@@ -188,12 +193,31 @@ async def prepare_answer(
 ) -> PreparedAnswer:
     if not question.strip():
         raise ValueError("The question is empty.")
-    sources = await retrieve_sources(question, document_ids)
+    search_query = await search_query_for(question, history)
+    sources = await retrieve_sources(search_query, document_ids)
     return PreparedAnswer(
         question=question,
         sources=sources,
+        # The answer prompt keeps the user's own question and the history.
         messages=build_messages(question, sources, history),
+        search_query=search_query if search_query != question else None,
     )
+
+
+async def search_query_for(question: str, history: Sequence[HistoryMessage]) -> str:
+    """The text to search with: with QUERY_REWRITE_ENABLED and earlier conversation, the
+    question rewritten to stand on its own; otherwise the question itself (no model call).
+
+    If the rewrite call fails, the error is logged and the original question is used, so a
+    rewrite outage never breaks chat.
+    """
+    if not query_rewrite_enabled() or not history:
+        return question
+    try:
+        return await rewrite_question(question, history, query_rewrite_model() or chat_model())
+    except (TimeoutError, ConnectionError, AIRateLimitError, AIServiceError):
+        logger.warning("Query rewrite failed; searching with the original question.", exc_info=True)
+        return question
 
 
 async def stream_answer(

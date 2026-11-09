@@ -39,6 +39,11 @@ from app.services.chunking import (
 )
 from app.services.embeddings import EMBEDDING_BATCH_SIZE, EMBEDDING_MODEL, embed_texts
 from app.services.llm import complete
+from app.services.query_rewrite import (
+    build_rewrite_messages,
+    query_rewrite_enabled,
+    rewrite_question,
+)
 from app.services.summarizer import AIRateLimitError, AIServiceError, AIServiceNotConfiguredError
 
 from . import scoring
@@ -63,6 +68,10 @@ CACHE_PATH = EVALS_DIR / ".cache" / "embeddings.jsonl"
 # Free OpenRouter models chosen in step 14; override in backend/.env.
 DEFAULT_ANSWER_MODEL = "google/gemma-4-31b-it:free"
 DEFAULT_JUDGE_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+# Free model for query rewriting in evals (EVAL_REWRITE_MODEL overrides it). Gemma 4 was
+# rate-limited for minutes at a time when this was chosen (2026-11-09).
+DEFAULT_REWRITE_MODEL = "nvidia/nemotron-3.5-lightning:free"
+ESTIMATED_REWRITE_OUTPUT_TOKENS = 40
 # text-embedding-3-small through OpenRouter, as measured in step 6 ($1.44e-6 for 72 tokens).
 FALLBACK_EMBEDDING_PRICE_PER_TOKEN = 0.02 / 1_000_000
 
@@ -88,6 +97,7 @@ MAX_RATE_LIMIT_ATTEMPTS = 6
 MAX_NETWORK_ATTEMPTS = 3
 
 AnswerFn = Callable[[chat.PreparedAnswer, str], Awaitable[str]]
+RewriteFn = Callable[[str, list, str], Awaitable[str]]
 JudgeFn = Callable[[list[dict], str], Awaitable[str]]
 SleepFn = Callable[[float], Awaitable[None]]
 
@@ -149,6 +159,7 @@ class Settings:
     # Added after step 15. Left out of the fingerprint while unset, so runs started
     # before they existed can still be resumed.
     categories: tuple[str, ...] | None = None
+    query_rewrite_model: str | None = None  # set when query rewriting is on
 
     def fingerprint(self) -> str:
         return _sha(json.dumps(self.as_dict(), sort_keys=True).encode())
@@ -161,14 +172,15 @@ class Settings:
         return data
 
 
-OPTIONAL_SETTINGS = ("categories",)
+OPTIONAL_SETTINGS = ("categories", "query_rewrite_model")
 
 
 def make_settings(mode: str, answer_model: str | None, judge_model: str | None,
                   corpus: list[CorpusFile], excluded: list[dict] | None = None,
                   exclusion_reason: str | None = None,
                   retrieval: str | None = None,
-                  categories: list[str] | None = None) -> Settings:
+                  categories: list[str] | None = None,
+                  rewrite_model: str | None = None) -> Settings:
     answers = mode == "answers"
     excluded = excluded or []
     return Settings(
@@ -188,6 +200,7 @@ def make_settings(mode: str, answer_model: str | None, judge_model: str | None,
         excluded_questions=tuple(item["id"] for item in excluded),
         exclusion_reason=exclusion_reason if excluded else None,
         categories=tuple(categories) if categories else None,
+        query_rewrite_model=rewrite_model,
     )
 
 
@@ -256,6 +269,22 @@ def estimate(settings: Settings, corpus: list[CorpusFile], questions: list[dict]
             f"{len(texts) - len(missing)} of {len(texts)} texts already cached",
         )
     ]
+    to_rewrite = [q for q in questions if q.get("history")] if settings.query_rewrite_model else []
+    if to_rewrite:
+        rewrite_input = sum(
+            estimate_tokens(m["content"])
+            for q in to_rewrite
+            for m in build_rewrite_messages(q["question"], history_of(q))
+        )
+        rewrite_output = ESTIMATED_REWRITE_OUTPUT_TOKENS * len(to_rewrite)
+        lines[0].note += (f"; plus up to {len(to_rewrite)} embeddings of rewritten questions "
+                          "(not known until they are rewritten)")
+        lines.append(EstimateLine(
+            f"query rewrite ({settings.query_rewrite_model})", len(to_rewrite), rewrite_input,
+            rewrite_output, _model_cost(settings.query_rewrite_model, prices, rewrite_input,
+                                        rewrite_output),
+            "one call per question with history; questions without history make no call",
+        ))
     if settings.mode == "answers":
         chunk_tokens = [chunk.token_estimate for f in corpus for chunk in f.chunks]
         sources_tokens = settings.top_k * mean(chunk_tokens)
@@ -284,7 +313,8 @@ def format_estimate(lines: list[EstimateLine], settings: Settings, questions: in
     out = [
         f"Eval run estimate: mode={settings.mode}, {questions} questions, "
         f"retrieval={settings.retrieval_mode}, top_k={settings.top_k}, "
-        f"min_similarity={settings.min_similarity}",
+        f"min_similarity={settings.min_similarity}, "
+        f"query rewrite={settings.query_rewrite_model or 'off'}",
         "",
         f"{'part':52} {'requests':>8} {'in tokens':>10} {'out tokens':>10} {'cost (USD)':>12}",
     ]
@@ -475,6 +505,10 @@ async def default_answer(prepared: chat.PreparedAnswer, model: str) -> str:
     return "".join([part async for part in chat.stream_answer(prepared, model=model)])
 
 
+async def default_rewrite(question: str, history: list, model: str) -> str:
+    return await rewrite_question(question, history, model)
+
+
 async def default_judge(messages: list[dict], model: str) -> str:
     return await complete(model=model, messages=messages, kind="judge", max_tokens=JUDGE_MAX_TOKENS)
 
@@ -500,9 +534,12 @@ class UsageCollector(logging.Handler):
 
 async def evaluate_question(item: dict, vector: list[float], settings: Settings,
                             answer_fn: AnswerFn, judge_fn: JudgeFn, sleep: SleepFn,
-                            pace_seconds: float) -> dict:
+                            pace_seconds: float, query: str | None = None) -> dict:
+    """`query` is what retrieval searches with (the rewritten question, if any); `vector`
+    is its embedding."""
+    query = query or item["question"]
     matches = chat.find_matches(
-        item["question"], vector, k=settings.top_k, mode=settings.retrieval_mode,
+        query, vector, k=settings.top_k, mode=settings.retrieval_mode,
         threshold=settings.min_similarity,
     )
     retrieved = [
@@ -519,6 +556,8 @@ async def evaluate_question(item: dict, vector: list[float], settings: Settings,
         "retrieved": [asdict(r) for r in retrieved],
         "top_similarity": retrieved[0].similarity if retrieved else None,
     }
+    if query != item["question"]:
+        record["query"] = query
     if item["answerable"]:
         record["retrieval"] = scoring.retrieval_metrics(item, retrieved)
 
@@ -555,10 +594,13 @@ async def evaluate_question(item: dict, vector: list[float], settings: Settings,
 # --- Report --------------------------------------------------------------------------
 
 
-def resume_flags(skip_arabic_pdf: bool, categories) -> str:
+def resume_flags(skip_arabic_pdf: bool, categories, rewrite_model: str | None = None) -> str:
     """The options a resume must repeat so its settings match the original run."""
     flags = " --skip-arabic-pdf" if skip_arabic_pdf else ""
-    return flags + "".join(f" --category {c}" for c in categories or [])
+    flags += "".join(f" --category {c}" for c in categories or [])
+    if rewrite_model:
+        flags += f" --query-rewrite on --rewrite-model {rewrite_model}"
+    return flags
 
 
 def _rate(values: list[bool]) -> float | None:
@@ -685,7 +727,8 @@ def summarize(log: RunLog, questions: list[dict], corpus: list[CorpusFile],
     remaining = [q["id"] for q in questions if q["id"] not in done]
     partial = None
     if remaining:
-        flags = resume_flags(bool(excluded_ids), header["settings"].get("categories"))
+        flags = resume_flags(bool(excluded_ids), header["settings"].get("categories"),
+                             header["settings"].get("query_rewrite_model"))
         partial = {
             "evaluated": len(done),
             "target": len(questions),
@@ -737,6 +780,7 @@ def summarize(log: RunLog, questions: list[dict], corpus: list[CorpusFile],
         "actual_cost": _actual_cost(log),
         "questions": [
             {k: r[k] for k in ("id", "category", "language", "arabic_pdf", "top_similarity")}
+            | ({"query": r["query"]} if "query" in r else {})
             | {"first_hit_rank": r.get("retrieval", {}).get("first_hit_rank"),
                "judge_score": r.get("answer", {}).get("judge", {}).get("score")}
             for r in results
@@ -777,6 +821,8 @@ def render_report(summary: dict) -> str:
     ]
     if s.get("categories"):
         lines.append(f"- Categories evaluated: {', '.join(s['categories'])} (--category)")
+    lines.append(f"- Query rewrite: "
+                 + (f"on, `{s['query_rewrite_model']}`" if s.get("query_rewrite_model") else "off"))
     if s["mode"] == "answers":
         lines.append(f"- Answer model: `{s['answer_model']}` · judge: `{s['judge_model']}` "
                      f"({s['judge_prompt_version']}). Answer scores describe this answer model, "
@@ -836,6 +882,14 @@ def render_report(summary: dict) -> str:
     lines.append("")
     lines.append(f"All expected sources in the top {s['top_k']} (conflict + cross-document): "
                  f"{_fmt(retrieval['all']['all_sources_found'])}")
+
+    rewritten = [q for q in summary["questions"] if "query" in q]
+    if rewritten:
+        all_questions = {q["id"]: q for q in load_questions()}
+        lines += ["", "## Rewritten questions (used for retrieval)", "",
+                  "| ID | Question | Rewritten | First hit rank |", "|---|---|---|---|"]
+        lines += [f"| {q['id']} | {all_questions[q['id']]['question']} | {q['query']} | "
+                  f"{q['first_hit_rank'] or 'not in top ' + str(s['top_k'])} |" for q in rewritten]
 
     sims = summary["top_similarity"]
     lines += ["", "## Top-1 similarity (for threshold tuning)", "",
@@ -897,7 +951,8 @@ def write_report(summary: dict, label: str | None) -> tuple[Path, Path]:
 async def run(log: RunLog, settings: Settings, questions: list[dict], corpus: list[CorpusFile],
               cache: EmbeddingCache, answer_fn: AnswerFn = default_answer,
               judge_fn: JudgeFn = default_judge, sleep: SleepFn = asyncio.sleep,
-              pace_seconds: float = 0.0, database_url: str | None = None) -> None:
+              pace_seconds: float = 0.0, database_url: str | None = None,
+              rewrite_fn: RewriteFn = default_rewrite) -> None:
     """Index the corpus, then evaluate every question not yet in the run log."""
     collector = UsageCollector()
     usage_logger = logging.getLogger("app.services.usage")
@@ -916,8 +971,18 @@ async def run(log: RunLog, settings: Settings, questions: list[dict], corpus: li
         remaining = [(q, v) for q, v in zip(questions, vectors) if q["id"] not in done]
         for index, (item, vector) in enumerate(remaining, start=1):
             print(f"[{index}/{len(remaining)}] {item['id']}", flush=True)
+            query = item["question"]
+            if settings.query_rewrite_model and item.get("history"):
+                query = await call_with_retries(
+                    lambda: rewrite_fn(item["question"], history_of(item),
+                                       settings.query_rewrite_model),
+                    f"rewrite {item['id']}", sleep,
+                )
+                await sleep(pace_seconds)
+                print(f"    rewritten: {query}", flush=True)
+                [vector] = await cache.embed([query])
             record = await evaluate_question(
-                item, vector, settings, answer_fn, judge_fn, sleep, pace_seconds
+                item, vector, settings, answer_fn, judge_fn, sleep, pace_seconds, query=query
             )
             record["usage"] = collector.take()
             log.append(record)
@@ -948,6 +1013,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--category", action="append", metavar="CATEGORY",
                         help="evaluate only this question category (repeatable), "
                              "e.g. --category follow_up")
+    parser.add_argument("--query-rewrite", choices=["on", "off"],
+                        help="rewrite follow-up questions before retrieval "
+                             "(default: QUERY_REWRITE_ENABLED, off if unset)")
+    parser.add_argument("--rewrite-model",
+                        help=f"override EVAL_REWRITE_MODEL (default: {DEFAULT_REWRITE_MODEL})")
     parser.add_argument("--retrieval-mode", choices=["vector", "hybrid"],
                         help="override RETRIEVAL_MODE (default: hybrid)")
     return parser.parse_args(argv)
@@ -966,9 +1036,14 @@ async def main_async(args: argparse.Namespace) -> int:
     answer_model = args.answer_model or os.getenv("EVAL_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL
     judge_model = args.judge_model or os.getenv("OPENROUTER_JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
     warnings = check_models(answer_model, judge_model) if args.mode == "answers" else []
+    rewrite_on = (args.query_rewrite == "on") if args.query_rewrite else query_rewrite_enabled()
+    # Evals rewrite with a free model, never the production QUERY_REWRITE_MODEL.
+    rewrite_model = (args.rewrite_model or os.getenv("EVAL_REWRITE_MODEL")
+                     or DEFAULT_REWRITE_MODEL) if rewrite_on else None
     settings = make_settings(args.mode, answer_model, judge_model, corpus,
                              excluded=excluded, exclusion_reason=ARABIC_PDF_EXCLUSION_REASON,
-                             retrieval=args.retrieval_mode, categories=args.category)
+                             retrieval=args.retrieval_mode, categories=args.category,
+                             rewrite_model=rewrite_model)
     if excluded:
         print(f"Excluding {len(excluded)} Arabic-PDF questions: "
               f"{', '.join(q['id'] for q in excluded)}\n")
@@ -989,7 +1064,8 @@ async def main_async(args: argparse.Namespace) -> int:
     pending = [q for q in questions if not resumed or q["id"] not in resumed.done_ids()]
 
     cache = EmbeddingCache(CACHE_PATH, settings.embedding_model, embed_texts)
-    models = [settings.embedding_model] + ([answer_model, judge_model] if args.mode == "answers" else [])
+    models = ([settings.embedding_model] + ([answer_model, judge_model] if args.mode == "answers" else [])
+              + ([rewrite_model] if rewrite_model else []))
     estimate_lines = estimate(settings, corpus, pending, cache, fetch_prices(models))
     print(format_estimate(estimate_lines, settings, len(pending), pace_seconds, warnings))
     if resumed:
@@ -1021,7 +1097,8 @@ async def main_async(args: argparse.Namespace) -> int:
                     "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
         print(f"\nStopped: {stopped}\nProgress is saved. Continue later with:\n"
               f"  python -m evals.run_evals --mode {args.mode}"
-              f"{resume_flags(args.skip_arabic_pdf, args.category)} --resume {log.run_id}")
+              f"{resume_flags(args.skip_arabic_pdf, args.category, rewrite_model)} "
+              f"--resume {log.run_id}")
         return 2
 
     md_path, json_path = write_report(summarize(log, questions, corpus), args.label)

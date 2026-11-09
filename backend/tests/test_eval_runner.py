@@ -476,6 +476,69 @@ def test_answers_mode_sends_the_follow_up_history(corpus, tmp_path):
     assert messages[-1]["content"].endswith("Question: And what about Brightwater?")
 
 
+def test_rewrite_runs_rewrite_only_follow_ups_and_search_with_the_rewrite(corpus, tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "REPORTS_DIR", tmp_path / "reports")
+    questions = [BY_ID["fu-01"], BY_ID["sf-01"]]
+    settings = runner.make_settings("retrieval", None, None, corpus, rewrite_model="google/r:free")
+    log = runner.RunLog.start(tmp_path / "run-rewrite.jsonl", settings)
+    calls = []
+
+    async def rewrite_fn(question, history, model):
+        calls.append((question, [m.content for m in history], model))
+        return "How many days of paid annual leave do Brightwater staff receive?"
+
+    asyncio.run(runner.run(log, settings, questions, corpus, make_cache(tmp_path),
+                           rewrite_fn=rewrite_fn, sleep=no_sleep))
+
+    # One call, only for the question with history, with that history and the eval model.
+    assert calls == [("And what about Brightwater?",
+                      [m["content"] for m in BY_ID["fu-01"]["history"]], "google/r:free")]
+    by_id = {r["id"]: r for r in log.results()}
+    assert by_id["fu-01"]["query"] == "How many days of paid annual leave do Brightwater staff receive?"
+    assert "query" not in by_id["sf-01"]
+    assert by_id["fu-01"]["retrieved"][0]["document"] == "brightwater_policies.pdf"
+    markdown = runner.render_report(runner.summarize(log, questions, corpus))
+    assert "- Query rewrite: on, `google/r:free`" in markdown
+    assert "| fu-01 | And what about Brightwater? | How many days of paid annual leave" in markdown
+
+
+def test_an_empty_rewrite_stops_the_run_instead_of_searching_with_the_original(corpus, tmp_path):
+    from app.services.query_rewrite import EmptyRewriteError
+
+    settings = runner.make_settings("retrieval", None, None, corpus, rewrite_model="google/r:free")
+    log = runner.RunLog.start(tmp_path / "run-empty.jsonl", settings)
+
+    async def rewrite_fn(question, history, model):
+        raise EmptyRewriteError("The rewrite model google/r:free returned no text.")
+
+    with pytest.raises(runner.RunStopped, match="returned no text"):
+        asyncio.run(runner.run(log, settings, [BY_ID["fu-01"]], corpus, make_cache(tmp_path),
+                               rewrite_fn=rewrite_fn, sleep=no_sleep))
+    assert log.results() == []
+
+
+def test_estimate_counts_one_rewrite_request_per_follow_up(corpus, tmp_path):
+    follow_ups = [q for q in QUESTIONS if q["category"] == "follow_up"]
+    questions = follow_ups + [BY_ID["sf-01"]]
+    cache = EmbeddingCache(tmp_path / "cache.jsonl", "openai/text-embedding-3-small", FakeEmbedder())
+    off = runner.make_settings("retrieval", None, None, corpus)
+    on = runner.make_settings("retrieval", None, None, corpus, rewrite_model="google/r:free")
+
+    assert [line.part for line in runner.estimate(off, corpus, questions, cache, {})] == ["embeddings"]
+    lines = runner.estimate(on, corpus, questions, cache, {})
+    rewrite = lines[1]
+    assert rewrite.part == "query rewrite (google/r:free)"
+    assert rewrite.requests == len(follow_ups) == 8
+    assert rewrite.cost_usd == 0.0  # free model
+    text = runner.format_estimate(lines, on, len(questions), 4, [])
+    assert "Model requests: 8." in text and "query rewrite=google/r:free" in text
+    # Unset, the rewrite setting stays out of the fingerprint (older runs still resume).
+    assert "query_rewrite_model" not in off.as_dict()
+    assert runner.resume_flags(False, ["follow_up"], "google/r:free") == (
+        " --category follow_up --query-rewrite on --rewrite-model google/r:free"
+    )
+
+
 def test_resume_with_changed_settings_is_refused(corpus, tmp_path):
     log = runner.RunLog.start(tmp_path / "run.jsonl", settings_for("answers", corpus))
 

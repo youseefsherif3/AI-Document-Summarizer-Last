@@ -19,8 +19,11 @@ async def complete(
     kind: str,
     temperature: float = 0,
     max_tokens: int = 1000,
+    extra_body: dict | None = None,
 ) -> str:
-    """The model's reply text. Errors are mapped like the summarizer's (504/503/429/502)."""
+    """The model's reply text. Errors are mapped like the summarizer's (504/503/429/502).
+
+    `extra_body` adds OpenRouter request fields, such as `reasoning`."""
     client = _get_async_client()
     started_at = time.perf_counter()
     usage = None
@@ -31,6 +34,7 @@ async def complete(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            **({"extra_body": extra_body} if extra_body else {}),
         )
         usage = getattr(response, "usage", None)
         choices = response.choices or []

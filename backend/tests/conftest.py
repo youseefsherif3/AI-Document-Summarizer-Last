@@ -77,6 +77,12 @@ def fake_embeddings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def query_rewrite_off(monkeypatch):
+    """Query rewriting calls a model, so it is off unless a test turns it on (with a fake)."""
+    monkeypatch.delenv("QUERY_REWRITE_ENABLED", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def fake_query_embedding(monkeypatch):
     """No real embedding calls for chat questions: the same fixed vector as fake chunks."""
     import app.services.chat as chat

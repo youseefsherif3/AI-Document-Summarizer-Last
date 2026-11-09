@@ -11,6 +11,7 @@
 - Backend: FastAPI in backend/app/
   - main.py: endpoints, text extraction (pypdf, python-docx, utf-8), validation
   - services/summarizer.py: the only place that calls OpenRouter (OpenAI SDK, base_url=https://openrouter.ai/api/v1)
+  - services/query_rewrite.py: rewrites a follow-up question into a standalone one before retrieval (one model call, only when there is history). QUERY_REWRITE_ENABLED is off by default
   - services/retrieval.py: chat retrieval. RETRIEVAL_MODE=hybrid (default: vector search + Postgres full-text search, merged with reciprocal rank fusion) or vector (vector search only)
   - database.py: SQLAlchemy Core, one `documents` table. Postgres + pgvector only (Neon in production, docker-compose.yml locally); DATABASE_URL is required, there is no SQLite fallback
 - Streaming uses SSE events: {"type": "delta" | "done" | "error", ...}. A document is saved only after the stream finishes successfully.
@@ -22,6 +23,7 @@
 - Production database is Neon Postgres, so the vector store is pgvector. Local dev uses Postgres + pgvector in Docker.
 - All Phase 2 work happens on the branch feature/rag, one small commit per step
 - Once the plan is approved it will be saved in docs/design.md. After that, implement ONE step at a time, then stop and show the diff.
+- Follow-up questions: 8 eval questions (category follow_up) and query rewriting are built; rewriting stays off until it is measured with the production chat model (docs/design.md, "Follow-up questions and query rewriting").
 - Step 15 (hybrid search) is done and hybrid is the default retrieval mode; results and the decision are in docs/design.md ("Step 15 results and decision"). Arabic normalization was skipped. Step 17 (reranking) has not started.
 
 ## Conventions
@@ -39,7 +41,7 @@
 - Backend tests (database must be running): cd backend && python -m pytest
 - Backend dev server: cd backend && uvicorn app.main:app --reload
 - Frontend: npm run dev, npx tsc --noEmit, npm run build
-- Evals: cd backend && python -m evals.run_evals --estimate-only (then run without it; default mode is retrieval only; --mode answers uses free models; --resume <run-id> continues a stopped run). Never run for real without showing the estimate and getting OK.
+- Evals: cd backend && python -m evals.run_evals --estimate-only (then run without it; default mode is retrieval only; --mode answers uses free models; --resume <run-id> continues a stopped run; --category follow_up runs one category; --query-rewrite on rewrites follow-ups with the free EVAL_REWRITE_MODEL). Never run for real without showing the estimate and getting OK.
 
 ## Known issues (deliberately out of scope for Phase 2 — don't fix unless asked)
 - No authentication; one shared database for all users (Phase 3: security)
@@ -50,6 +52,7 @@
 - `npm run lint` fails on code from the original import, not changed in Phase 2: `app/page.tsx` (dashboard) calls a setState-ing function directly in `useEffect` (error: `react-hooks/set-state-in-effect`), and `components/documents/FileCard.tsx` imports `LoaderCircle` without using it (warning). `tsc --noEmit` and `npm run build` pass.
 
 ## Avoid
-- Don't change prompts without running evals before and after
+- Don't change prompts without running evals before and after (this includes the query rewrite prompt)
+- Don't fall back silently in AI code. A fallback must log, and in evals it must stop the run. Once, an empty query rewrite (a free reasoning model spent its whole reply on reasoning) silently fell back to the original question, and the eval report looked like a real "with rewriting" result while matching the no-rewrite run exactly. Check that an "after" run actually changed something before trusting it.
 - Don't add dependencies without asking
 - Don't rewrite working upload/summary code while adding RAG; extend it

@@ -1,0 +1,283 @@
+{
+  "run_id": "20261109-190029-retrieval",
+  "started_at": "2026-11-09T19:00:29+00:00",
+  "finished_at": "2026-11-09T19:01:11+00:00",
+  "settings": {
+    "mode": "retrieval",
+    "answer_model": null,
+    "judge_model": null,
+    "embedding_model": "openai/text-embedding-3-small",
+    "retrieval_mode": "hybrid",
+    "top_k": 8,
+    "min_similarity": 0.0,
+    "chunk_max_tokens": 800,
+    "chunk_overlap_tokens": 120,
+    "questions_sha": "7c7e5e1db02b6ae6",
+    "corpus_sha": "5b8ee69c49b101d9",
+    "system_prompt_sha": "b55447865df8697e",
+    "judge_prompt_version": null,
+    "excluded_questions": [],
+    "exclusion_reason": null,
+    "categories": [
+      "follow_up"
+    ],
+    "query_rewrite_model": "nvidia/nemotron-3.5-lightning:free"
+  },
+  "partial": null,
+  "evaluated_questions": 8,
+  "total_questions": 64,
+  "excluded": {
+    "reason": null,
+    "questions": []
+  },
+  "estimate": [
+    {
+      "part": "embeddings",
+      "requests": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "note": "27 of 27 texts already cached; plus up to 8 embeddings of rewritten questions (not known until they are rewritten)"
+    },
+    {
+      "part": "query rewrite (nvidia/nemotron-3.5-lightning:free)",
+      "requests": 8,
+      "input_tokens": 2159,
+      "output_tokens": 320,
+      "cost_usd": 0.0,
+      "note": "one call per question with history; questions without history make no call"
+    }
+  ],
+  "extraction": [
+    {
+      "document": "northwind_handbook.pdf",
+      "format": "pdf",
+      "language": "en",
+      "facts": 3,
+      "found": 3,
+      "rate": 1.0
+    },
+    {
+      "document": "brightwater_policies.pdf",
+      "format": "pdf",
+      "language": "en",
+      "facts": 2,
+      "found": 2,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_security_policy.docx",
+      "format": "docx",
+      "language": "en",
+      "facts": 3,
+      "found": 3,
+      "rate": 1.0
+    },
+    {
+      "document": "brightwater_it_rules.docx",
+      "format": "docx",
+      "language": "en",
+      "facts": 1,
+      "found": 1,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_q3_report.txt",
+      "format": "txt",
+      "language": "en",
+      "facts": 2,
+      "found": 2,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_onboarding_memo.txt",
+      "format": "txt",
+      "language": "en",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    },
+    {
+      "document": "waha_library_ar.pdf",
+      "format": "pdf",
+      "language": "ar",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    },
+    {
+      "document": "nursin_port_ar.pdf",
+      "format": "pdf",
+      "language": "ar",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    },
+    {
+      "document": "nakheel_library_ar.txt",
+      "format": "txt",
+      "language": "ar",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    }
+  ],
+  "retrieval": {
+    "all": {
+      "questions": 8,
+      "hit@1": 0.5,
+      "hit@3": 0.75,
+      "hit@8": 0.75,
+      "mrr": 0.6041666666666666,
+      "all_sources_found": null
+    },
+    "without_arabic_pdf": {
+      "questions": 8,
+      "hit@1": 0.5,
+      "hit@3": 0.75,
+      "hit@8": 0.75,
+      "mrr": 0.6041666666666666,
+      "all_sources_found": null
+    },
+    "by_category": {
+      "follow_up": {
+        "questions": 8,
+        "hit@1": 0.5,
+        "hit@3": 0.75,
+        "hit@8": 0.75,
+        "mrr": 0.6041666666666666,
+        "all_sources_found": null
+      }
+    },
+    "by_language": {
+      "en": {
+        "questions": 8,
+        "hit@1": 0.5,
+        "hit@3": 0.75,
+        "hit@8": 0.75,
+        "mrr": 0.6041666666666666,
+        "all_sources_found": null
+      },
+      "ar": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      }
+    }
+  },
+  "top_similarity": {
+    "answerable": {
+      "mean": 0.5601961353253707,
+      "min": 0.38464396966646,
+      "max": 0.699907853106397
+    },
+    "unanswerable": null
+  },
+  "answers": {
+    "all": {},
+    "without_arabic_pdf": {},
+    "by_category": {
+      "follow_up": {}
+    }
+  },
+  "actual_cost": {
+    "rewrite": {
+      "calls": 8,
+      "cost_usd": 0.0,
+      "unknown_cost": 0,
+      "prompt_tokens": 2071,
+      "completion_tokens": 96
+    },
+    "embedding": {
+      "calls": 7,
+      "cost_usd": 1.5800000000000001e-06,
+      "unknown_cost": 0,
+      "prompt_tokens": 79,
+      "completion_tokens": 0
+    }
+  },
+  "questions": [
+    {
+      "id": "fu-01",
+      "category": "follow_up",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5609856174250547,
+      "query": "And what about Brightwater employees' paid annual leave?",
+      "first_hit_rank": 2,
+      "judge_score": null
+    },
+    {
+      "id": "fu-02",
+      "category": "follow_up",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.48968445137292094,
+      "first_hit_rank": null,
+      "judge_score": null
+    },
+    {
+      "id": "fu-03",
+      "category": "follow_up",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.699907853106397,
+      "query": "What are Northwind Robotics' core working hours?",
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "fu-04",
+      "category": "follow_up",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.38464396966646,
+      "query": "Who owns RouteWise?",
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "fu-05",
+      "category": "follow_up",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.5875402015936145,
+      "query": "How quickly do incidents have to be reported to Northwind?",
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "fu-06",
+      "category": "follow_up",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.4892232012553217,
+      "query": "Explain the Restricted data class.",
+      "first_hit_rank": 1,
+      "judge_score": null
+    },
+    {
+      "id": "fu-07",
+      "category": "follow_up",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6681120951465966,
+      "query": "What do they expect for Northwind's revenue in the next quarter after Q3 2026?",
+      "first_hit_rank": 3,
+      "judge_score": null
+    },
+    {
+      "id": "fu-08",
+      "category": "follow_up",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6014716930366002,
+      "query": "Is it the same at the other company as at Brightwater?",
+      "first_hit_rank": null,
+      "judge_score": null
+    }
+  ]
+}

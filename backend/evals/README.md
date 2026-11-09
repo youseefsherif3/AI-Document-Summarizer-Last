@@ -90,5 +90,15 @@ Evaluate one category only (repeatable), for example the follow-up questions, wh
 python -m evals.run_evals --category follow_up
 ```
 
+Query rewriting (follow-up questions): `--query-rewrite on` rewrites every question that has
+a `history` with a free model (`EVAL_REWRITE_MODEL`, default
+`nvidia/nemotron-3.5-lightning:free`), never the production `QUERY_REWRITE_MODEL`. The
+estimate shows the number of rewrite requests, and the report lists each rewritten question.
+An empty rewrite stops the run instead of silently searching with the original question.
+
+```bash
+python -m evals.run_evals --category follow_up --query-rewrite on
+```
+
 When the run finishes, the report is written to `reports/<timestamp>-<label>.md` and `.json`;
 `--label` names it. Pass `--yes` to skip the confirmation only after the estimate was approved.
