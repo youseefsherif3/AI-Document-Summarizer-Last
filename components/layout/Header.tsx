@@ -1,6 +1,9 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { Bell, Menu, Search, UserRound } from "lucide-react";
+
+import { pageTitle } from "./navItems";
 
 interface HeaderProps {
   // Opens the sidebar drawer on phones.
@@ -8,6 +11,8 @@ interface HeaderProps {
 }
 
 export default function Header({ onMenuClick }: HeaderProps) {
+  const pathname = usePathname();
+
   return (
     <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-[#111827] px-4 sm:h-20 sm:gap-5 sm:px-6 lg:px-8">
       <div className="flex min-w-0 items-center gap-2">
@@ -21,7 +26,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
         </button>
 
         <div className="min-w-0">
-          <h2 className="truncate text-lg font-semibold text-white">Dashboard</h2>
+          <h2 className="truncate text-lg font-semibold text-white">{pageTitle(pathname)}</h2>
           <p className="hidden truncate text-sm text-gray-500 sm:block">
             Manage and summarize your documents
           </p>

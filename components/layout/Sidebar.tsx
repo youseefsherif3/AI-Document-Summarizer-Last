@@ -2,21 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  LayoutDashboard,
-  FileText,
-  MessageSquare,
-  Settings,
-  HelpCircle,
-  Sparkles,
-  X,
-} from "lucide-react";
+import { Settings, HelpCircle, Sparkles, X } from "lucide-react";
 
-const navItems = [
-  { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "My Documents", href: "/documents", icon: FileText },
-  { label: "Chat", href: "/chat", icon: MessageSquare },
-];
+import { navItems } from "./navItems";
 
 interface SidebarProps {
   // Phone only: whether the drawer is open. From md up the sidebar is always shown.
