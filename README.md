@@ -196,18 +196,73 @@ From the project root:
 
 More in the "Known issues" section of [`CLAUDE.md`](CLAUDE.md).
 
-## Deployment (outdated)
+## Deployment (Vercel + Neon)
 
-These deployment notes predate the move to PostgreSQL + pgvector and have not been updated
-(a known issue, planned for Phase 3). `render.yaml` uses a Postgres `DATABASE_URL` (Neon),
-which would also need the `vector` extension.
+Production runs as **two Vercel projects from this repository** and a **Neon** Postgres
+database:
 
-The frontend can be imported into Vercel as a standard Next.js project. Set
-`NEXT_PUBLIC_API_URL` to the public URL of the deployed API, then deploy the frontend. This
-variable is public by design; never put provider credentials in the frontend.
+| Project | Root directory | What it is |
+|---|---|---|
+| Frontend | `/` (repo root) | Next.js app |
+| Backend | `backend` | FastAPI app (`app/main.py`), one Vercel Function; `backend/vercel.json` sets a 300-second limit and leaves `tests/` and `evals/` out of the bundle |
 
-`render.yaml` prepares a separate FastAPI service. During service setup, provide
-`OPENROUTER_API_KEY` and `DATABASE_URL`, and set `CORS_ORIGINS` to the exact Vercel origin (for
-example, `https://your-app.vercel.app`). Add the deployed API URL to Vercel as
-`NEXT_PUBLIC_API_URL` and redeploy. Confirm `/health`, upload/streaming, and chat after both
-services are live.
+**Uploads go through Vercel Blob.** Vercel Functions accept request bodies up to 4.5 MB, but
+the app allows files up to 10 MB, so the browser uploads the file to a private Blob store and the
+backend reads it from there (`NEXT_PUBLIC_VERCEL_BLOB_UPLOADS=true`). Create one **private** Blob
+store and connect it to **both** projects; that adds `BLOB_READ_WRITE_TOKEN` to each.
+
+### Environment variables
+
+Frontend project:
+
+| Variable | Value |
+|---|---|
+| `NEXT_PUBLIC_API_URL` | the backend's URL, for example `https://your-api.vercel.app` (public; read at build time, so redeploy after changing it) |
+| `NEXT_PUBLIC_VERCEL_BLOB_UPLOADS` | `true` |
+| `BLOB_READ_WRITE_TOKEN` | added by connecting the Blob store (secret) |
+
+Backend project:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | Neon's **pooled** connection string (secret) |
+| `OPENROUTER_API_KEY` | your OpenRouter key (secret) |
+| `BLOB_READ_WRITE_TOKEN` | the same Blob store, connected to this project too (secret) |
+| `CORS_ORIGINS` | the frontend's exact URL, for example `https://your-app.vercel.app`; comma-separate several (preview URLs are blocked unless listed) |
+| `OPENROUTER_MODEL` | optional, default `openai/gpt-4o` |
+
+Never put `OPENROUTER_API_KEY` or `DATABASE_URL` in the frontend project. `TEST_DATABASE_URL`
+and the `EVAL_*` settings are for local development only.
+
+### Database
+
+There is no separate migration step: **on its first start the backend updates the database
+itself.** It enables the `vector` extension (available on every Neon plan), creates the
+`chunks` table with its HNSW index, and checks that stored vectors have 1,536 dimensions. The
+existing `documents` table is kept as it is. Before the first deploy, create a **Neon branch of
+production as a backup**, and try the backend against that branch first. Filtering chat to
+selected documents needs pgvector 0.8 or newer (`SELECT extversion FROM pg_extension WHERE
+extname = 'vector';`).
+
+**Documents uploaded before chat existed** keep their summaries but have no chunks, so chat
+can't find them. Upload them again to make them searchable.
+
+The backend disables server-side prepared statements, so Neon's pooled connection string
+(PgBouncer) works.
+
+### Order of deployment
+
+1. Create the Neon backup branch; note the pooled connection string.
+2. Create the private Blob store.
+3. Create the backend project (root `backend`), connect the Blob store, set its variables with
+   `CORS_ORIGINS` left for later, and deploy. Check `https://your-api.vercel.app/health`.
+4. Create the frontend project (repo root), connect the Blob store, set `NEXT_PUBLIC_API_URL`
+   to the backend's URL and `NEXT_PUBLIC_VERCEL_BLOB_UPLOADS=true`, and deploy.
+5. Set the backend's `CORS_ORIGINS` to the frontend's URL and redeploy the backend.
+6. Check in the browser: upload a small TXT and a PDF over 4.5 MB, ask a question on the Chat
+   page and get an answer with citations, delete a document. The backend's Vercel logs show one
+   `ai_usage` line per AI call.
+
+Limits on Vercel: one upload (summary plus indexing) must finish within the function's time
+limit (300 seconds on the Hobby plan, up to 800 on Pro), and very large documents can exceed
+the summary model's input size.

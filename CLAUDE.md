@@ -42,7 +42,7 @@
 ## Known issues (deliberately out of scope for Phase 2 — don't fix unless asked)
 - No authentication; one shared database for all users (Phase 3: security)
 - Blob upload authorization only checks Origin/Host headers; orphaned blobs are never cleaned up
-- Deployment docs disagree (README says Render + SQLite disk; render.yaml uses Neon; backend/vercel.json also exists)
+- Deployment is two Vercel projects (frontend at the repo root, backend in `backend/`) plus Neon; see README "Deployment". In production, uploads must use Vercel Blob (Vercel Functions accept at most 4.5 MB per request) and one upload must finish within the function time limit (300 s on Hobby). Documents uploaded before RAG have no chunks until re-uploaded.
 - Raw file bytes are stored in the DB but never read
 - Arabic **PDF** extraction with pypdf came out badly broken in our test (stray control characters, split words, scrambled word order) and was not investigated. Arabic PDFs are not supported for now, and eval questions whose source is an Arabic PDF (`waha_library_ar.pdf`, `nursin_port_ar.pdf`) are expected to fail. Arabic TXT and DOCX extraction, Arabic questions and English–Arabic retrieval worked in our tests.
 - `npm run lint` fails on code from the original import, not changed in Phase 2: `app/page.tsx` (dashboard) calls a setState-ing function directly in `useEffect` (error: `react-hooks/set-state-in-effect`), and `components/documents/FileCard.tsx` imports `LoaderCircle` without using it (warning). `tsc --noEmit` and `npm run build` pass.

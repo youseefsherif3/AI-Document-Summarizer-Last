@@ -126,7 +126,14 @@ def _database_url() -> str:
 def _engine() -> Engine:
     url = _database_url()
     if url not in _engines:
-        _engines[url] = create_engine(url, pool_pre_ping=True)
+        _engines[url] = create_engine(
+            url,
+            pool_pre_ping=True,
+            # Never use server-side prepared statements: behind a transaction pooler
+            # (Neon's pooled connection string, PgBouncer) consecutive queries can run on
+            # different server connections, where a prepared statement doesn't exist.
+            connect_args={"prepare_threshold": None},
+        )
     return _engines[url]
 
 
