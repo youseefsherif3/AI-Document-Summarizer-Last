@@ -54,6 +54,9 @@ Current state this builds on (branch `feature/rag`, HEAD `2f48c30`):
 - **Out of scope for Phase 2:** CI (Phase 3) and any production rollout. Neon setup, the
   `vector` extension there and backfilling production documents are not done in this phase.
   Everything runs locally.
+- **Backfill script moved to Phase 3.** The local database is fresh, so there are no documents
+  without chunks to re-index, and production is out of scope. Step 9 is kept as an empty number so
+  later step numbers stay the same.
 
 ## Design
 
@@ -134,6 +137,25 @@ and the eval judge.
   kept. A setting (`RETRIEVAL_MODE=vector|hybrid`) keeps both modes available so the evals can
   compare them.
 
+**Reranking** (step 17):
+- Retrieval (vector or hybrid, whichever the step 15 and 16 reports favor) returns the top 20
+  chunks instead of 8, and a reranker scores each chunk against the question and keeps the best 8.
+  The threshold from step 16 still applies before reranking.
+- A setting (`RERANK_ENABLED=true|false`) keeps both behaviors so the evals can compare them.
+- The reranker call lives in `backend/app/services/` and is logged like every other AI call
+  (`kind=rerank`, tokens or units, cost).
+- If the reranker fails or times out, the chat falls back to the first 8 retrieved chunks and logs
+  the error, so a reranker outage doesn't break chat.
+- **Choosing the reranker happens at the start of step 17.** If it needs a new provider or a new
+  dependency, I list the options and ask you before writing code. Candidates to check then:
+  - an LLM reranker through OpenRouter with a model already in use (no new provider or
+    dependency, but it is a new prompt and adds a chat call per question);
+  - a dedicated rerank model, if OpenRouter offers one (no new provider);
+  - a hosted rerank API such as Cohere or Jina (new provider and API key; multilingual models
+    exist);
+  - a local cross-encoder such as `BAAI/bge-reranker-v2-m3` (multilingual, no per-call cost, but a
+    large new dependency: `sentence-transformers` and PyTorch).
+
 **Frontend:**
 - New `lib/sse.ts` reader for the chat page. `DocumentsContext` keeps its own parser, so working
   upload code isn't rewritten.
@@ -179,7 +201,7 @@ and the eval judge.
 | 6 | **Embeddings service.** First a manual one-off check (outside pytest) that OpenRouter's embeddings endpoint works with `openai/text-embedding-3-small` and returns 1536 dimensions. | Fake-client tests: batching (130 texts → 3 calls), order kept, error mapping, a missing key gives 503, a dimension mismatch raises, usage is logged. |
 | 7 | **Chunks table and repository:** schema, HNSW index, dimension check, `save_document_with_chunks()` in one transaction, `search_chunks(vector, k, document_ids, min_similarity=0)`, delete cascades. | Postgres tests with hand-made small vectors: nearest-first ordering, the `document_ids` filter, the threshold when set, deleting a document removes its chunks, a failed chunk insert leaves no document, a dimension mismatch is detected at startup. |
 | 8 | **Index on upload** in both streaming endpoints (parallel embedding, atomic save, cancellation). | Extend the existing stream tests (summary and embeddings mocked): chunks are saved with pages; an embedding failure gives an SSE error and saves nothing; cancelling saves nothing and cancels the embedding task; the blob temp file is still deleted. |
-| 9 | **Backfill script** `backend/scripts/reindex_documents.py`: re-extracts stored `file_content` and indexes documents with no chunks. It is idempotent and has `--dry-run`. Local use only in this phase. | Test with mocked embeddings: only unindexed documents are processed, and a second run does nothing. |
+| 9 | *Removed: the backfill script moved to Phase 3 (the local database is fresh and production is out of scope). The number is kept so later steps keep their numbers.* | — |
 | 10 | **Chat service:** retrieval (threshold 0), prompt builder and streaming answer through `OPENROUTER_CHAT_MODEL`, with usage logging. | Unit tests: numbered sources and delimiters in the prompt, the history limit, the conflict, injection and language rules are present, the chat model setting falls back to the summary model, no chunks gives the fixed reply with no model call, usage is logged. |
 | 11 | **`POST /chat/stream` endpoint.** | API tests (embeddings and LLM mocked, real Postgres): event order sources → delta… → done; the shape of the sources payload; the `document_ids` filter; each error mapped to its status (504/503/429/502) as an SSE event; 400 for an empty message or unknown document IDs; the no-documents case. |
 | 12 | **Chat page frontend:** `lib/sse.ts`, `ChatMessage.sources`, streaming answer, citation buttons, sources list, document picker, Stop, errors, "Send Summary" kept. | `tsc --noEmit` and `npm run build`. A browser check with the backend running: ask a question, see the answer stream, the citations link to the sources, the picker limits results, Stop works, and backend errors show inline. |
@@ -187,12 +209,16 @@ and the eval judge.
 | 14 | **Eval runner and baseline:** `run_evals.py` with extraction, retrieval and answer metrics, LLM-as-judge (fixed prompt, score + short reason), and per-category cost including the judge. Choose the judge model (a different model, ideally from a different provider). Run on vector search with threshold 0 and commit the **baseline report**. | Scoring functions, judge-response parsing (including malformed judge output) and cost totals are unit-tested with fixed inputs and a mocked judge. The runner stops with a clear error when `OPENROUTER_JUDGE_MODEL` is missing or equals the chat model, and warns on the same provider. One real baseline run; the cost estimate is shown before it starts. |
 | 15 | **Hybrid search:** `content_tsv` generated column with the `simple` config and a GIN index, the full-text search leg, reciprocal rank fusion, `RETRIEVAL_MODE` setting. Run the evals **before** (vector) and **after** (hybrid), and commit both reports. The reports show Arabic retrieval results separately, to decide whether Arabic normalization is needed (it would be its own later step). | Postgres tests: an exact-term query that vector search misses is found by hybrid; an Arabic term matches with `simple`; the RRF order is checked on a small hand-made example; the `document_ids` filter applies to both lists; `vector` mode still behaves as before. |
 | 16 | **Similarity threshold tuning:** choose `RETRIEVAL_MIN_SIMILARITY` from the eval data (refusal accuracy on unanswerable questions against answer recall). Run the evals **before** (0) and **after** (the tuned value), and commit both reports. | The before and after reports, compared in the commit message. A test that chunks under the threshold are dropped, and that 0 disables the threshold. |
+| 17 | **Reranking:** retrieve the top 20, rerank down to 8, `RERANK_ENABLED` setting, fallback to the retrieval order on reranker failure, usage logging. Choose the reranker first; if it needs a new provider or dependency, list the options and ask before writing code. Run the evals **before** (reranking off) and **after** (on), and commit both reports. | Unit tests with a mocked reranker: it receives 20 chunks and 8 come back in its order; with reranking off, retrieval order is unchanged; a reranker error falls back to the first 8 and is logged; the call is usage-logged. The before and after reports, compared in the commit message. |
 
 ## Open questions
 
-None. The judge model is chosen in step 14, and whether Arabic normalization is needed is decided
-from the step 15 reports. (The `simple` config doesn't unify alef forms (أ إ آ ا), ta marbuta or
-diacritics, so some Arabic words may not match in full-text search.)
+None for now. These are decided at their steps:
+- The judge model, in step 14.
+- Whether Arabic normalization is needed, from the step 15 reports. (The `simple` config doesn't
+  unify alef forms (أ إ آ ا), ta marbuta or diacritics, so some Arabic words may not match in
+  full-text search.)
+- The reranker, at the start of step 17. A new provider or dependency needs your OK first.
 
 ## Trade-offs
 
@@ -213,11 +239,13 @@ diacritics, so some Arabic words may not match in full-text search.)
 - **LLM-as-judge:** catches correct answers phrased differently from the key facts, but adds cost
   and some variance. Temperature 0 and a fixed, versioned prompt keep it repeatable, and a judge
   from a different model and provider avoids a model grading its own answers.
-- **No re-ranking or query rewriting** in this phase. History is sent to the answer model only, and
-  retrieval uses the latest question. If the evals show follow-up questions fail, this can be
-  added later.
+- **Reranking:** usually puts the most relevant chunks first and lets retrieval cast a wider net
+  (20 instead of 8), but adds one more call per question: extra latency and cost, or a large local
+  dependency. It is kept only if the step 17 reports show it helps.
+- **No query rewriting** in this phase. History is sent to the answer model only, and retrieval
+  uses the latest question. If the evals show follow-up questions fail, this can be added later.
 
-## Verification (end to end, after step 16)
+## Verification (end to end, after step 17)
 
 1. `docker compose up -d`; backend `.env` uses `DATABASE_URL` for the dev database; install
    `requirements.txt` and `requirements-dev.txt`; run `cd backend && python -m pytest` with
@@ -229,7 +257,8 @@ diacritics, so some Arabic words may not match in full-text search.)
    filename and page are correct, the document picker limits results, and "not in your documents"
    works.
 4. Delete a document and confirm its chunks are gone and it no longer appears as a source.
-5. Compare the committed reports: baseline (step 14), vector vs hybrid (step 15), and threshold
-   before and after (step 16), including extraction quality for Arabic PDFs and judge scores.
-6. Backend logs show one usage line (model, tokens, cost) for every summary, embedding, chat and
-   judge call.
+5. Compare the committed reports: baseline (step 14), vector vs hybrid (step 15), threshold
+   before and after (step 16), and reranking off vs on (step 17), including extraction quality for
+   Arabic PDFs and judge scores.
+6. Backend logs show one usage line (model, tokens, cost) for every summary, embedding, chat,
+   rerank and judge call.
