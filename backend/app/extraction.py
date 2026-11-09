@@ -36,7 +36,11 @@ def extract_text(file_content: bytes, file_extension: str) -> str:
 
     PDF and TXT give exactly the same text as before per-page extraction existed.
     """
-    pages = extract_pages(file_content, file_extension)
+    return join_pages(extract_pages(file_content, file_extension), file_extension)
+
+
+def join_pages(pages: list[Page], file_extension: str) -> str:
+    """The pages joined back into the whole-document text that extract_text returns."""
     separator = TXT_PAGE_SEPARATOR if file_extension == ".txt" else "\n"
     return separator.join(page.text for page in pages)
 

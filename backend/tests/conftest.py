@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 
 # Importing app.database loads backend/.env, so TEST_DATABASE_URL can live there.
 import app.database as database
+import app.main as main
 
 SETUP_HINT = (
     "Start the database with `docker compose up -d` (from the project root) and set "
@@ -56,6 +57,23 @@ def test_database():
         yield url
         for engine in database._engines.values():
             engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def fake_embeddings(monkeypatch):
+    """No real embedding calls in tests: uploads get a fixed vector per chunk.
+
+    Returns the list of calls (each a list of texts). Tests can override it with
+    their own monkeypatch of main.embed_texts.
+    """
+    calls = []
+
+    async def fake_embed_texts(texts):
+        calls.append(list(texts))
+        return [[1.0] + [0.0] * (database.EMBEDDING_DIMENSIONS - 1) for _ in texts]
+
+    monkeypatch.setattr(main, "embed_texts", fake_embed_texts)
+    return calls
 
 
 @pytest.fixture(autouse=True)

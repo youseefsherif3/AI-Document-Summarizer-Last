@@ -3,7 +3,7 @@ from io import BytesIO
 from docx import Document
 from pypdf import PdfReader, PdfWriter
 
-from app.main import extract_text
+from app.extraction import extract_text
 
 
 def test_extract_text_from_txt():

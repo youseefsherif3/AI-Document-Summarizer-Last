@@ -175,7 +175,7 @@ def test_unsupported_extension_has_no_pages():
     assert extract_pages(b"Some content", ".jpg") == []
 
 
-def test_upload_runs_extraction_in_a_threadpool(monkeypatch):
+def test_upload_runs_extraction_and_saving_in_a_threadpool(monkeypatch):
     calls = []
     real_run_in_threadpool = main.run_in_threadpool
 
@@ -196,4 +196,5 @@ def test_upload_runs_extraction_in_a_threadpool(monkeypatch):
         )
 
     assert '"type": "done"' in response.text
-    assert calls == [main.extract_text]
+    # Extraction + chunking, then the database write: both off the event loop.
+    assert calls == [main._read_document, main.save_document_with_chunks]

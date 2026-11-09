@@ -202,20 +202,6 @@ def _insert_document(
     return result.inserted_primary_key[0]
 
 
-def save_document(
-    filename: str,
-    file_type: str,
-    file_size: int,
-    file_content: bytes,
-    extracted_text: str,
-    summary: str | None = None,
-):
-    with get_connection() as connection:
-        return _insert_document(
-            connection, filename, file_type, file_size, file_content, extracted_text, summary
-        )
-
-
 def save_document_with_chunks(
     filename: str,
     file_type: str,
