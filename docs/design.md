@@ -46,9 +46,18 @@ Current state this builds on (branch `feature/rag`, HEAD `2f48c30`):
 - **"Send Summary" stays** on the chat page.
 - **Similarity threshold starts disabled (0).** It is tuned only after the baseline report, in its
   own commit with before and after reports.
-- **Judge model:** the eval judge must be a different model from the chat model, ideally from a
-  different provider. `OPENROUTER_JUDGE_MODEL` is required to run the evals; it has no default.
-  The model is chosen in step 14.
+- **Evals are as free as possible.**
+  - The default mode is **retrieval only**: only embeddings, which cost almost nothing, and are
+    cached so re-runs are free.
+  - End-to-end answers and the LLM judge use **OpenRouter `:free` models by default**, set in
+    `backend/.env` (`EVAL_ANSWER_MODEL`, `OPENROUTER_JUDGE_MODEL`).
+  - The runner waits and retries on rate limits, and saves progress after every question, so a
+    stopped run resumes where it stopped instead of starting over.
+  - **Before any real eval run, the runner prints the estimated cost and waits for your OK.**
+- **Judge model:** the eval judge must be a different model from the answer model, ideally from
+  a different provider. It defaults to a free model set in `.env`; the runner refuses to start if
+  the judge and answer models are the same, and warns if they come from the same provider. The
+  free defaults are chosen in step 14 from OpenRouter's current `:free` list.
 - **Arabic normalization for full-text search:** measured first in step 15. Normalization is added
   only if the evals show it matters, as its own step.
 - **Out of scope for Phase 2:** CI (Phase 3) and any production rollout. Neon setup, the
@@ -147,9 +156,12 @@ and the eval judge.
 - If the reranker fails or times out, the chat falls back to the first 8 retrieved chunks and logs
   the error, so a reranker outage doesn't break chat.
 - **Choosing the reranker happens at the start of step 17.** If it needs a new provider or a new
-  dependency, I list the options and ask you before writing code. Candidates to check then:
-  - an LLM reranker through OpenRouter with a model already in use (no new provider or
-    dependency, but it is a new prompt and adds a chat call per question);
+  dependency, I list the options and ask you before writing code. **A free option is preferred.**
+  Candidates to check then, in order of preference:
+  - **an LLM reranker through OpenRouter using a `:free` model (preferred):** no cost, no new
+    provider or dependency; it is a new prompt, adds one call per question, and is subject to
+    free-tier rate limits, so the fallback to retrieval order matters;
+  - an LLM reranker through OpenRouter with a paid model already in use (same, but costs money);
   - a dedicated rerank model, if OpenRouter offers one (no new provider);
   - a hosted rerank API such as Cohere or Jina (new provider and API key; multilingual models
     exist);
@@ -174,7 +186,28 @@ and the eval judge.
 - `questions.jsonl` has 50+ items, each with: id, question, language, category, expected key
   facts, expected document and page(s), and whether it is answerable.
 - `run_evals.py` (`python -m evals.run_evals`) indexes the corpus into a separate eval database
-  (never dev data) and reports:
+  (never dev data).
+- **Run modes, cheapest first:**
+  - `--mode retrieval` (**default**): extraction and retrieval metrics only. The only AI calls
+    are embeddings for the corpus chunks and the 56 questions. Embeddings are cached on disk
+    (gitignored), keyed by model and text, so a repeat run with the same corpus costs nothing.
+  - `--mode answers`: also generates answers and runs the judge. Both use free models by default:
+    `EVAL_ANSWER_MODEL` and `OPENROUTER_JUDGE_MODEL`, set in `.env` to `:free` model IDs. A run
+    with the production chat model (`--answer-model`, for example gpt-4o) is possible but costs
+    money, and only happens after your OK.
+- **Cost gate:** before any real run, the runner prints what it will call and the estimated
+  tokens and cost per part (embeddings, answers, judge), counting free models as $0 and cached
+  embeddings as free, then asks for confirmation. When I run it non-interactively, I first run
+  `--estimate-only`, show you the estimate, and pass `--yes` only after your OK in chat.
+- **Rate limits and resume:**
+  - Free models have per-minute and daily request limits. On a 429, the runner waits (using
+    `Retry-After` when given, otherwise exponential backoff) and retries.
+  - Results are written to `evals/runs/<run-id>.jsonl` (gitignored) after every question.
+    `--resume <run-id>` skips questions that are already done, so a run stopped by a daily limit
+    or Ctrl+C continues later instead of starting over.
+  - A resume refuses to continue if the settings changed (models, retrieval settings, or the
+    corpus and questions files, compared by hash), so one report never mixes settings.
+- It reports:
   - **Extraction quality:** the share of expected key facts found in the extracted page text,
     split by format and language. Arabic PDFs are reported separately.
   - **Retrieval:** hit@k and MRR against the expected pages.
@@ -188,12 +221,16 @@ and the eval judge.
     made only with eval reports before and after.
   - **LLM-as-judge correctness:** a fixed judge prompt, stored in the repo and versioned, gets the
     question, the expected key facts and the answer. It returns JSON `{score: 1–5, reason: short
-    text}`, with temperature 0. The model is `OPENROUTER_JUDGE_MODEL`, which is **required**
-    (no default). The runner refuses to start if it is missing or the same as the chat model, and
-    warns if both models come from the same provider (the `provider/` prefix of the model ID).
-  - **Cost:** tokens and cost split into embeddings, answers and judge, plus the total.
+    text}`, with temperature 0, plus a pass/fail for each of the question's `judge_checks`. The
+    model is `OPENROUTER_JUDGE_MODEL` (a free model by default). The runner refuses to start if
+    it is the same as the answer model, and warns if both come from the same provider (the
+    `provider/` prefix of the model ID).
+  - **Cost:** tokens and actual cost split into embeddings, answers and judge, plus the total,
+    next to the estimate shown before the run.
 - Reports go to `evals/reports/<timestamp>-<label>.md` and `.json`, with the settings used
-  (models, retrieval mode, threshold, k) so reports can be compared.
+  (mode, models, retrieval mode, threshold, k) so reports can be compared. Answer and judge
+  scores are labeled with the answer model, because a free model's scores say how that model
+  does, not how the production chat model would.
 
 ## Steps (one commit each on `feature/rag`; stop and show the diff after each)
 
@@ -212,19 +249,21 @@ and the eval judge.
 | 11 | **`POST /chat/stream` endpoint.** | API tests (embeddings and LLM mocked, real Postgres): event order sources → delta… → done; the shape of the sources payload; the `document_ids` filter; each error mapped to its status (504/503/429/502) as an SSE event; 400 for an empty message or unknown document IDs; the no-documents case. |
 | 12 | **Chat page frontend:** `lib/sse.ts`, `ChatMessage.sources`, streaming answer, citation buttons, sources list, document picker, Stop, errors, "Send Summary" kept. | `tsc --noEmit` and `npm run build`. A browser check with the backend running: ask a question, see the answer stream, the citations link to the sources, the picker limits results, Stop works, and backend errors show inline. |
 | 13 | **Eval corpus and questions:** `build_corpus.py` (fpdf2 added to `requirements-dev.txt`, Noto Naskh Arabic font and its license file in `evals/fonts/`), generated corpus, and `questions.jsonl` with 50+ items. Categories: single fact, two-page answer, table lookup, conflicting values, Arabic question on an Arabic document, English question on an Arabic document, cross-document, unanswerable, prompt injection. **I stop here for your review of every question and expected answer before committing.** | `pytest` validates the file: every expected document and page exists in the corpus, and every item has the required fields. The extraction check itself is reported by the evals, so a bad Arabic PDF extraction shows up as a measured result, not a failing test. |
-| 14 | **Eval runner and baseline:** `run_evals.py` with extraction, retrieval and answer metrics, LLM-as-judge (fixed prompt, score + short reason), and per-category cost including the judge. Choose the judge model (a different model, ideally from a different provider). Run on vector search with threshold 0 and commit the **baseline report**. | Scoring functions, judge-response parsing (including malformed judge output) and cost totals are unit-tested with fixed inputs and a mocked judge. The runner stops with a clear error when `OPENROUTER_JUDGE_MODEL` is missing or equals the chat model, and warns on the same provider. One real baseline run; the cost estimate is shown before it starts. |
-| 15 | **Hybrid search:** `content_tsv` generated column with the `simple` config and a GIN index, the full-text search leg, reciprocal rank fusion, `RETRIEVAL_MODE` setting. Run the evals **before** (vector) and **after** (hybrid), and commit both reports. The reports show Arabic retrieval results separately, to decide whether Arabic normalization is needed (it would be its own later step). | Postgres tests: an exact-term query that vector search misses is found by hybrid; an Arabic term matches with `simple`; the RRF order is checked on a small hand-made example; the `document_ids` filter applies to both lists; `vector` mode still behaves as before. |
-| 16 | **Similarity threshold tuning:** choose `RETRIEVAL_MIN_SIMILARITY` from the eval data (refusal accuracy on unanswerable questions against answer recall). Run the evals **before** (0) and **after** (the tuned value), and commit both reports. | The before and after reports, compared in the commit message. A test that chunks under the threshold are dropped, and that 0 disables the threshold. |
-| 17 | **Reranking:** retrieve the top 20, rerank down to 8, `RERANK_ENABLED` setting, fallback to the retrieval order on reranker failure, usage logging. Choose the reranker first; if it needs a new provider or dependency, list the options and ask before writing code. Run the evals **before** (reranking off) and **after** (on), and commit both reports. | Unit tests with a mocked reranker: it receives 20 chunks and 8 come back in its order; with reranking off, retrieval order is unchanged; a reranker error falls back to the first 8 and is logged; the call is usage-logged. The before and after reports, compared in the commit message. |
+| 14 | **Eval runner and baseline:** `run_evals.py` with extraction, retrieval and answer metrics, LLM-as-judge (fixed prompt, score + short reason, judge checks), and per-category cost including the judge. Modes `retrieval` (default) and `answers`; embedding cache; cost estimate and confirmation; rate-limit retries; progress saved per question and `--resume`. Choose the free answer and judge models from OpenRouter's current `:free` list (different models, ideally different providers) and add them to `.env.example`. Run on vector search with threshold 0 and commit the **baseline reports**: retrieval mode, then answers mode with the free models. | Unit tests with fixed inputs and mocked models: scoring, judge-response parsing (including malformed output), cost totals and the estimate; a 429 is retried after the wait; a stopped run resumes without redoing finished questions; a resume with changed settings is refused; cached embeddings make no API call; the runner refuses identical judge and answer models and warns on the same provider. Real runs only after you approve the printed estimate. |
+| 15 | **Hybrid search:** `content_tsv` generated column with the `simple` config and a GIN index, the full-text search leg, reciprocal rank fusion, `RETRIEVAL_MODE` setting. Run the evals **before** (vector) and **after** (hybrid) in retrieval mode (almost free), plus answers mode with the free models, and commit both reports. The reports show Arabic retrieval results separately, to decide whether Arabic normalization is needed (it would be its own later step). | Postgres tests: an exact-term query that vector search misses is found by hybrid; an Arabic term matches with `simple`; the RRF order is checked on a small hand-made example; the `document_ids` filter applies to both lists; `vector` mode still behaves as before. |
+| 16 | **Similarity threshold tuning:** choose `RETRIEVAL_MIN_SIMILARITY` from the eval data (refusal accuracy on unanswerable questions against answer recall). Refusal accuracy needs answers, so this step runs answers mode with the free models. Run the evals **before** (0) and **after** (the tuned value), and commit both reports. | The before and after reports, compared in the commit message. A test that chunks under the threshold are dropped, and that 0 disables the threshold. |
+| 17 | **Reranking:** retrieve the top 20, rerank down to 8, `RERANK_ENABLED` setting, fallback to the retrieval order on reranker failure, usage logging. Choose the reranker first, preferring a free option (a `:free` model through OpenRouter); if it needs a new provider or dependency, list the options and ask before writing code. Run the evals **before** (reranking off) and **after** (on), in retrieval mode plus answers mode with the free models, and commit both reports. | Unit tests with a mocked reranker: it receives 20 chunks and 8 come back in its order; with reranking off, retrieval order is unchanged; a reranker error falls back to the first 8 and is logged; the call is usage-logged. The before and after reports, compared in the commit message. |
 
 ## Open questions
 
 None for now. These are decided at their steps:
-- The judge model, in step 14.
+- The free answer and judge models, in step 14, from OpenRouter's `:free` list at that time
+  (free models come and go, so they are settings in `.env`, not fixed in code).
 - Whether Arabic normalization is needed, from the step 15 reports. (The `simple` config doesn't
   unify alef forms (أ إ آ ا), ta marbuta or diacritics, so some Arabic words may not match in
   full-text search.)
-- The reranker, at the start of step 17. A new provider or dependency needs your OK first.
+- The reranker, at the start of step 17, preferring a free option. A new provider or dependency
+  needs your OK first.
 
 ## Trade-offs
 
@@ -245,6 +284,15 @@ None for now. These are decided at their steps:
 - **LLM-as-judge:** catches correct answers phrased differently from the key facts, but adds cost
   and some variance. Temperature 0 and a fixed, versioned prompt keep it repeatable, and a judge
   from a different model and provider avoids a model grading its own answers.
+- **Free models for answers and the judge:** no cost, but:
+  - their scores measure the free model, not the production chat model (gpt-4o), so a prompt
+    change that helps one may not help the other; a paid run with the production model stays
+    possible, with your OK;
+  - rate and daily limits make answer runs slow, and a run can take more than one day (resume
+    handles this);
+  - free endpoints may log prompts, which is acceptable only because the eval corpus is
+    fictional: evals must never run on real documents with free models;
+  - free models can disappear or change, so the model IDs are recorded in every report.
 - **Reranking:** usually puts the most relevant chunks first and lets retrieval cast a wider net
   (20 instead of 8), but adds one more call per question: extra latency and cost, or a large local
   dependency. It is kept only if the step 17 reports show it helps.
