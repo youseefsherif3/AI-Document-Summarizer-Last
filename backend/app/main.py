@@ -1,5 +1,4 @@
 
-from io import BytesIO
 from contextlib import asynccontextmanager
 
 import json
@@ -7,14 +6,14 @@ import logging
 import os
 import re
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
-from pypdf import PdfReader
-from docx import Document
 from pydantic import BaseModel, Field
 from vercel import blob
 
+from .extraction import extract_text
 from .database import (
     initialize_database,
     save_document,
@@ -92,29 +91,6 @@ def root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
-
-
-def extract_text(file_content: bytes, file_extension: str) -> str:
-    if file_extension == ".pdf":
-        pdf_reader = PdfReader(BytesIO(file_content))
-
-        return "\n".join(
-            page.extract_text() or ""
-            for page in pdf_reader.pages
-        )
-
-    if file_extension == ".docx":
-        document = Document(BytesIO(file_content))
-
-        return "\n".join(
-            paragraph.text
-            for paragraph in document.paragraphs
-        )
-
-    if file_extension == ".txt":
-        return file_content.decode("utf-8-sig")
-
-    return ""
 
 
 @app.get("/documents")
@@ -199,7 +175,8 @@ async def upload_document_stream(file: UploadFile = File(...)):
     if not file_content:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
     try:
-        extracted_text = extract_text(file_content, file_extension)
+        # PDF parsing is CPU-heavy; keep it off the event loop.
+        extracted_text = await run_in_threadpool(extract_text, file_content, file_extension)
     except Exception as error:
         raise HTTPException(status_code=400, detail="Could not read the uploaded file.") from error
     if not extracted_text.strip():
@@ -288,7 +265,8 @@ async def upload_document_stream_from_blob(upload: BlobSummaryRequest):
         raise HTTPException(status_code=400, detail="Uploaded file is empty or incomplete.")
 
     try:
-        extracted_text = extract_text(file_content, file_extension)
+        # PDF parsing is CPU-heavy; keep it off the event loop.
+        extracted_text = await run_in_threadpool(extract_text, file_content, file_extension)
     except Exception as error:
         await _delete_temporary_blob(upload.pathname)
         raise HTTPException(status_code=400, detail="Could not read the uploaded file.") from error
