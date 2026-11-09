@@ -37,7 +37,7 @@
 - Backend tests (database must be running): cd backend && python -m pytest
 - Backend dev server: cd backend && uvicorn app.main:app --reload
 - Frontend: npm run dev, npx tsc --noEmit, npm run build
-- Evals (once added): cd backend && python -m evals.run_evals
+- Evals: cd backend && python -m evals.run_evals --estimate-only (then run without it; default mode is retrieval only; --mode answers uses free models; --resume <run-id> continues a stopped run). Never run for real without showing the estimate and getting OK.
 
 ## Known issues (deliberately out of scope for Phase 2 — don't fix unless asked)
 - No authentication; one shared database for all users (Phase 3: security)

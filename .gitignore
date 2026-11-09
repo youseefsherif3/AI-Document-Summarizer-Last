@@ -51,6 +51,8 @@ backend/**/__pycache__/
 # generated eval files (see backend/evals/README.md)
 backend/evals/corpus/
 backend/evals/questions.md
+backend/evals/runs/
+backend/evals/.cache/
 
 # typescript
 *.tsbuildinfo

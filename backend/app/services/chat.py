@@ -14,7 +14,7 @@ from app.database import ChunkMatch, search_chunks
 
 from . import summarizer
 from .embeddings import embed_query
-from .summarizer import AIRateLimitError, AIServiceError, _get_async_client
+from .summarizer import AIServiceError, _get_async_client, rate_limit_error
 from .usage import log_ai_usage
 
 RETRIEVAL_TOP_K = 8
@@ -87,7 +87,7 @@ class PreparedAnswer:
     usage: dict | None = field(default=None)  # filled in after the answer has streamed
 
 
-def _sources_from_matches(matches: Sequence[ChunkMatch]) -> list[Source]:
+def sources_from_matches(matches: Sequence[ChunkMatch]) -> list[Source]:
     return [
         Source(
             n=n,
@@ -114,7 +114,7 @@ async def retrieve_sources(
         document_ids=document_ids,
         min_similarity=min_similarity(),
     )
-    return _sources_from_matches(matches)
+    return sources_from_matches(matches)
 
 
 def _attribute(value: str) -> str:
@@ -185,14 +185,19 @@ async def prepare_answer(
     )
 
 
-async def stream_answer(prepared: PreparedAnswer) -> AsyncIterator[str]:
-    """Yield the answer text. With no sources, yields a fixed reply without calling the model."""
+async def stream_answer(
+    prepared: PreparedAnswer, model: str | None = None
+) -> AsyncIterator[str]:
+    """Yield the answer text. With no sources, yields a fixed reply without calling the model.
+
+    `model` overrides OPENROUTER_CHAT_MODEL (the evals use it to answer with a free model).
+    """
     if not prepared.sources:
         yield not_found_message(prepared.question)
         return
 
     client = _get_async_client()
-    model = chat_model()
+    model = model or chat_model()
     started_at = time.perf_counter()
     usage = None
     outcome = "error"
@@ -222,9 +227,7 @@ async def stream_answer(prepared: PreparedAnswer) -> AsyncIterator[str]:
     except APIConnectionError as error:
         raise ConnectionError("Could not connect to the AI service.") from error
     except RateLimitError as error:
-        raise AIRateLimitError(
-            "The AI service rate limit has been exceeded. Please try again later."
-        ) from error
+        raise rate_limit_error(error) from error
     except APIStatusError as error:
         raise AIServiceError(
             f"The AI service returned an API error: {error.status_code}"

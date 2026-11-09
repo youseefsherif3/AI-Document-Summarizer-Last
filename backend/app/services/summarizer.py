@@ -27,7 +27,35 @@ MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
 
 
 class AIRateLimitError(Exception):
-    """Raised when the AI provider rate limit is exceeded."""
+    """Raised when the AI provider rate limit is exceeded.
+
+    `retry_after` is the provider's suggested wait in seconds, if it sent one; `detail` is
+    the provider's own message (for example, which limit was hit).
+    """
+
+    def __init__(self, message: str, *, retry_after: float | None = None, detail: str = ""):
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.detail = detail
+
+
+def rate_limit_error(error: RateLimitError) -> AIRateLimitError:
+    """Map OpenRouter's 429 to AIRateLimitError, keeping the suggested wait and its message."""
+    headers = error.response.headers if error.response is not None else {}
+    retry_after = None
+    try:
+        if headers.get("retry-after"):
+            retry_after = float(headers["retry-after"])
+        elif headers.get("x-ratelimit-reset"):
+            # Epoch milliseconds when the limit resets.
+            retry_after = max(0.0, float(headers["x-ratelimit-reset"]) / 1000 - time.time())
+    except ValueError:
+        retry_after = None
+    return AIRateLimitError(
+        "The AI service rate limit has been exceeded. Please try again later.",
+        retry_after=retry_after,
+        detail=str(error),
+    )
 
 
 class AIServiceError(Exception):
