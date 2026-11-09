@@ -23,10 +23,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
-DATABASE_NAME = os.getenv(
-    "AI_DOCUMENTS_DB",
-    str(Path(__file__).resolve().parents[1] / "documents.db"),
-)
+# Postgres with pgvector: Neon in production, Docker locally (docker-compose.yml).
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 metadata = MetaData()
@@ -47,24 +44,25 @@ _engines: dict[str, Engine] = {}
 
 
 def _database_url() -> str:
-    if DATABASE_URL:
-        # Neon provides a PostgreSQL URL without a SQLAlchemy driver suffix.
-        url = DATABASE_URL
-        if url.startswith("postgres://"):
-            return url.replace("postgres://", "postgresql+psycopg://", 1)
-        if url.startswith("postgresql://"):
-            return url.replace("postgresql://", "postgresql+psycopg://", 1)
-        return url
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is not set. Start the local database with "
+            "`docker compose up -d` and set DATABASE_URL in backend/.env (see README)."
+        )
 
-    # Keep local development and tests simple while production uses Neon.
-    return f"sqlite:///{Path(DATABASE_NAME).resolve().as_posix()}"
+    # Neon and Docker give a PostgreSQL URL without a SQLAlchemy driver suffix.
+    url = DATABASE_URL
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+psycopg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return url
 
 
 def _engine() -> Engine:
     url = _database_url()
     if url not in _engines:
-        connect_args = {"check_same_thread": False} if url.startswith("sqlite:") else {}
-        _engines[url] = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+        _engines[url] = create_engine(url, pool_pre_ping=True)
     return _engines[url]
 
 
@@ -76,9 +74,12 @@ def get_connection() -> Iterator[Connection]:
 
 def initialize_database():
     engine = _engine()
+    with engine.begin() as connection:
+        # pgvector, used by the RAG chunks table (Phase 2).
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     metadata.create_all(engine)
 
-    # Support existing SQLite databases created before summaries were stored.
+    # Support existing databases created before summaries were stored.
     columns = {column["name"] for column in inspect(engine).get_columns("documents")}
     if "summary" not in columns:
         with engine.begin() as connection:

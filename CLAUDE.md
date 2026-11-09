@@ -11,7 +11,7 @@
 - Backend: FastAPI in backend/app/
   - main.py: endpoints, text extraction (pypdf, python-docx, utf-8), validation
   - services/summarizer.py: the only place that calls OpenRouter (OpenAI SDK, base_url=https://openrouter.ai/api/v1)
-  - database.py: SQLAlchemy Core, one `documents` table. Postgres (Neon) when DATABASE_URL is set, SQLite otherwise
+  - database.py: SQLAlchemy Core, one `documents` table. Postgres + pgvector only (Neon in production, docker-compose.yml locally); DATABASE_URL is required, there is no SQLite fallback
 - Streaming uses SSE events: {"type": "delta" | "done" | "error", ...}. A document is saved only after the stream finishes successfully.
 - Provider errors are mapped: TimeoutError→504, ConnectionError→503, AIServiceNotConfiguredError (OPENROUTER_API_KEY missing)→503, AIRateLimitError→429, AIServiceError→502
 - The chat page does NOT call the model yet; it only displays upload summaries.
@@ -26,12 +26,15 @@
 - All calls to OpenRouter (chat and embeddings) live in backend/app/services/ — never from main.py or the frontend
 - Never put API keys in the frontend
 - Tests mock every AI call (see tests/test_api.py with monkeypatch). No real API calls in pytest.
+- Tests run against the Docker test database (TEST_DATABASE_URL, name must end in `_test`); tests/conftest.py empties its tables before each test and refuses to run against DATABASE_URL.
 - New LLM/embedding code must log model, prompt/completion tokens, and estimated cost
 - New code must log errors instead of swallowing them (no bare `except Exception: pass`)
 - CPU-heavy or blocking work (PDF parsing, embedding batches, DB writes) must not block the event loop: use run_in_threadpool or async clients
 
 ## Commands
-- Backend tests: cd backend && python -m pytest
+- Local database: docker compose up -d (stop: docker compose stop; status: docker compose ps; reset: docker compose down -v)
+- Backend packages: cd backend && pip install -r requirements-dev.txt
+- Backend tests (database must be running): cd backend && python -m pytest
 - Backend dev server: cd backend && uvicorn app.main:app --reload
 - Frontend: npm run dev, npx tsc --noEmit, npm run build
 - Evals (once added): cd backend && python -m evals.run_evals
