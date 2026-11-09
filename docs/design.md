@@ -256,9 +256,51 @@ and the eval judge.
 | 12 | **Chat page frontend:** `lib/sse.ts`, `ChatMessage.sources`, streaming answer, citation buttons, sources list, document picker, Stop, errors, "Send Summary" kept. | `tsc --noEmit` and `npm run build`. A browser check with the backend running: ask a question, see the answer stream, the citations link to the sources, the picker limits results, Stop works, and backend errors show inline. |
 | 13 | **Eval corpus and questions:** `build_corpus.py` (fpdf2 added to `requirements-dev.txt`, Noto Naskh Arabic font and its license file in `evals/fonts/`), generated corpus, and `questions.jsonl` with 50+ items. Categories: single fact, two-page answer, table lookup, conflicting values, Arabic question on an Arabic document, English question on an Arabic document, cross-document, unanswerable, prompt injection. **I stop here for your review of every question and expected answer before committing.** | `pytest` validates the file: every expected document and page exists in the corpus, and every item has the required fields. The extraction check itself is reported by the evals, so a bad Arabic PDF extraction shows up as a measured result, not a failing test. |
 | 14 | **Eval runner and baseline:** `run_evals.py` with extraction, retrieval and answer metrics, LLM-as-judge (fixed prompt, score + short reason, judge checks), and per-category cost including the judge. Modes `retrieval` (default) and `answers`; embedding cache; cost estimate and confirmation; rate-limit retries; progress saved per question and `--resume`. Choose the free answer and judge models from OpenRouter's current `:free` list (different models, ideally different providers) and add them to `.env.example`. Run on vector search with threshold 0 and commit the **baseline reports**: retrieval mode (all 56 questions), then answers mode with the free models, once, without the 14 Arabic-PDF questions (42 questions, 84 requests, resumed over two days). | Unit tests with fixed inputs and mocked models: scoring, judge-response parsing (including malformed output), cost totals and the estimate; a 429 is retried after the wait; a stopped run resumes without redoing finished questions; a resume with changed settings is refused; cached embeddings make no API call; the runner refuses identical judge and answer models and warns on the same provider. Real runs only after you approve the printed estimate. |
-| 15 | **Hybrid search:** `content_tsv` generated column with the `simple` config and a GIN index, the full-text search leg, reciprocal rank fusion, `RETRIEVAL_MODE` setting. Run the evals **before** (vector) and **after** (hybrid) in retrieval mode only, and commit both reports. The reports show Arabic retrieval results separately, to decide whether Arabic normalization is needed (it would be its own later step). | Postgres tests: an exact-term query that vector search misses is found by hybrid; an Arabic term matches with `simple`; the RRF order is checked on a small hand-made example; the `document_ids` filter applies to both lists; `vector` mode still behaves as before. |
-| 16 | **Similarity threshold tuning:** choose `RETRIEVAL_MIN_SIMILARITY` from retrieval data only: for each candidate threshold, the share of unanswerable questions whose best match falls below it (they would get the fixed "not found" reply) against the share of answerable questions whose correct source would be dropped. The step 14 baseline already shows these overlap, so the result may be to keep 0. Run the evals **before** (0) and **after** (the chosen value) in retrieval mode only, and commit both reports. | The before and after reports, compared in the commit message. A test that chunks under the threshold are dropped, and that 0 disables the threshold. |
-| 17 | **Reranking:** retrieve the top 20, rerank down to 8, `RERANK_ENABLED` setting, fallback to the retrieval order on reranker failure, usage logging. Choose the reranker first, preferring a free option (a `:free` model through OpenRouter); if it needs a new provider or dependency, list the options and ask before writing code. Run the evals **before** (reranking off) and **after** (on) in retrieval mode only (the reranker's own calls are the only model calls), and commit both reports. | Unit tests with a mocked reranker: it receives 20 chunks and 8 come back in its order; with reranking off, retrieval order is unchanged; a reranker error falls back to the first 8 and is logged; the call is usage-logged. The before and after reports, compared in the commit message. |
+| 15 | **Future work, not done in Phase 2.** **Hybrid search:** `content_tsv` generated column with the `simple` config and a GIN index, the full-text search leg, reciprocal rank fusion, `RETRIEVAL_MODE` setting. Run the evals **before** (vector) and **after** (hybrid) in retrieval mode only, and commit both reports. The reports show Arabic retrieval results separately, to decide whether Arabic normalization is needed (it would be its own later step). | Postgres tests: an exact-term query that vector search misses is found by hybrid; an Arabic term matches with `simple`; the RRF order is checked on a small hand-made example; the `document_ids` filter applies to both lists; `vector` mode still behaves as before. |
+| 16 | **Decided: keep `RETRIEVAL_MIN_SIMILARITY` at 0** (see "Step 16 decision" below; no code change). Original plan: **Similarity threshold tuning:** choose `RETRIEVAL_MIN_SIMILARITY` from retrieval data only: for each candidate threshold, the share of unanswerable questions whose best match falls below it (they would get the fixed "not found" reply) against the share of answerable questions whose correct source would be dropped. The step 14 baseline already shows these overlap, so the result may be to keep 0. Run the evals **before** (0) and **after** (the chosen value) in retrieval mode only, and commit both reports. | The before and after reports, compared in the commit message. A test that chunks under the threshold are dropped, and that 0 disables the threshold. |
+| 17 | **Future work, not done in Phase 2.** **Reranking:** retrieve the top 20, rerank down to 8, `RERANK_ENABLED` setting, fallback to the retrieval order on reranker failure, usage logging. Choose the reranker first, preferring a free option (a `:free` model through OpenRouter); if it needs a new provider or dependency, list the options and ask before writing code. Run the evals **before** (reranking off) and **after** (on) in retrieval mode only (the reranker's own calls are the only model calls), and commit both reports. | Unit tests with a mocked reranker: it receives 20 chunks and 8 come back in its order; with reranking off, retrieval order is unchanged; a reranker error falls back to the first 8 and is logged; the call is usage-logged. The before and after reports, compared in the commit message. |
+
+## Status at delivery (2026-11-09)
+
+- **Done:** steps 1–8 and 10–13; step 14's eval runner and **retrieval baseline** (all 56
+  questions); step 16 (decided, below).
+- **Partial:** step 14's **answers baseline**: 2 of 42 questions evaluated (both scored 5/5 by
+  the judge, with correct citations). The free OpenRouter endpoints were congested on delivery
+  day: `google/gemma-4-31b-it:free` stopped after 1 question, and
+  `google/gemma-4-26b-a4b-it:free` needed 3–4 retries per question (about 3 minutes each), so
+  the run was stopped. Free models are also capped at 50 requests a day on this account, so a
+  full run takes several days. The partial report
+  (`backend/evals/reports/20261109-135409-baseline-answers-partial.md`) lists what was evaluated,
+  the reason, and the resume command (with `EVAL_ANSWER_MODEL=google/gemma-4-26b-a4b-it:free`).
+- **Future work:** step 15 (hybrid search) and step 17 (reranking). The baseline shows where
+  they would help: without the Arabic-PDF questions, the right source is always in the top 8
+  (hit@8 100%) but first only 69% of the time, because look-alike documents rank higher.
+- **Phase 3:** step 9 (backfill script), CI, production rollout, and the known issues in
+  CLAUDE.md (including Arabic PDF extraction).
+
+### Step 16 decision: keep the threshold at 0
+
+From the step 14 retrieval baseline (`20261109-132750-baseline-retrieval`), top-1 similarity:
+answerable questions mean 0.539 (lowest 0.206); unanswerable questions mean 0.458, range
+0.196–0.588. Effect of each threshold:
+
+| Threshold | Unanswerable caught (of 7) | Answerable lost (of 49) | Answerable lost, without Arabic-PDF questions (of 35) |
+|---|---|---|---|
+| 0.30 | 2 | 3 | 0 |
+| 0.45 | 2 | 11 | 0 |
+| 0.50 | 3 | 17 | 5 |
+| 0.55 | 5 | 23 | 10 |
+| 0.60 | 7 | 33 | 19 |
+
+The two ranges overlap: the highest unanswerable score (0.588) is above most answerable ones,
+so no threshold catches most unanswerable questions without dropping real answers. The best
+candidate, 0.45, would catch only 2 of 7 and sits 0.01 below the lowest answerable score
+outside the Arabic PDFs (0.46), too thin a margin on 56 questions. It would also risk
+cross-language questions, whose correct matches score lower (0.406 for a true
+English/Arabic pair in step 6). So the threshold stays at 0, and "not in your documents"
+answers rely on the system prompt, which refused the unanswerable salary question correctly
+in step 10. The setting (`RETRIEVAL_MIN_SIMILARITY`) and its tests already exist, so this needs
+no code change.
 
 ## Open questions
 
