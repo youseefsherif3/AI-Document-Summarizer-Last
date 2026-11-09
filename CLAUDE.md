@@ -44,6 +44,7 @@
 - Blob upload authorization only checks Origin/Host headers; orphaned blobs are never cleaned up
 - Deployment docs disagree (README says Render + SQLite disk; render.yaml uses Neon; backend/vercel.json also exists)
 - Raw file bytes are stored in the DB but never read
+- Arabic **PDF** extraction with pypdf came out badly broken in our test (stray control characters, split words, scrambled word order) and was not investigated. Arabic PDFs are not supported for now, and eval questions whose source is an Arabic PDF (`waha_library_ar.pdf`, `nursin_port_ar.pdf`) are expected to fail. Arabic TXT and DOCX extraction, Arabic questions and English–Arabic retrieval worked in our tests.
 
 ## Avoid
 - Don't change prompts without running evals before and after
