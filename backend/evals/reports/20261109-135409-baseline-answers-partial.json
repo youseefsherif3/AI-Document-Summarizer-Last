@@ -1,0 +1,516 @@
+{
+  "run_id": "20261109-134740-answers",
+  "started_at": "2026-11-09T13:47:40+00:00",
+  "finished_at": "2026-11-09T13:54:09+00:00",
+  "settings": {
+    "mode": "answers",
+    "answer_model": "google/gemma-4-26b-a4b-it:free",
+    "judge_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "embedding_model": "openai/text-embedding-3-small",
+    "retrieval_mode": "vector",
+    "top_k": 8,
+    "min_similarity": 0.0,
+    "chunk_max_tokens": 800,
+    "chunk_overlap_tokens": 120,
+    "questions_sha": "0947b8d4a9cf25d6",
+    "corpus_sha": "5b8ee69c49b101d9",
+    "system_prompt_sha": "b55447865df8697e",
+    "judge_prompt_version": "judge-v1",
+    "excluded_questions": [
+      "tp-03",
+      "ar-01",
+      "ar-02",
+      "ar-03",
+      "ar-04",
+      "ar-05",
+      "ar-06",
+      "ar-07",
+      "ar-10",
+      "ea-01",
+      "ea-02",
+      "ea-03",
+      "ea-04",
+      "cd-04"
+    ],
+    "exclusion_reason": "Sourced from an Arabic PDF. pypdf extraction of the two Arabic PDFs is broken (CLAUDE.md, Known issues), so these questions are known to fail; they were left out with --skip-arabic-pdf."
+  },
+  "partial": {
+    "evaluated": 2,
+    "target": 42,
+    "remaining": [
+      "sf-03",
+      "sf-04",
+      "sf-05",
+      "sf-06",
+      "sf-07",
+      "sf-08",
+      "sf-09",
+      "sf-10",
+      "sf-11",
+      "sf-12",
+      "sf-13",
+      "sf-14",
+      "sf-15",
+      "tp-01",
+      "tp-02",
+      "tb-01",
+      "tb-02",
+      "tb-03",
+      "tb-04",
+      "tb-05",
+      "cf-01",
+      "up-01",
+      "up-02",
+      "ar-08",
+      "ar-09",
+      "ea-05",
+      "cd-01",
+      "cd-02",
+      "cd-03",
+      "cd-05",
+      "un-01",
+      "un-02",
+      "un-03",
+      "un-04",
+      "un-05",
+      "un-06",
+      "un-07",
+      "in-01",
+      "in-02",
+      "in-03"
+    ],
+    "reason": "The free OpenRouter endpoints were congested, so the run was stopped on delivery day (2026-11-09) after 2 questions. With google/gemma-4-26b-a4b-it:free, the answer requests were refused with HTTP 429 (upstream rate limiting) 3-4 times per question before succeeding, about 3 minutes per question, and sf-03 was still being refused when the run was stopped. An earlier run with google/gemma-4-31b-it:free was refused the same way and stopped by itself after 1 question. The account's free-model daily limit was not reached (6 of 50 requests used), but the remaining 40 questions need 80 more requests, so finishing would also take two more days at 50 free requests per day. Run with EVAL_ANSWER_MODEL=google/gemma-4-26b-a4b-it:free set, so the settings match.",
+    "resume_command": "python -m evals.run_evals --mode answers --skip-arabic-pdf --resume 20261109-134740-answers"
+  },
+  "evaluated_questions": 2,
+  "total_questions": 56,
+  "excluded": {
+    "reason": "Sourced from an Arabic PDF. pypdf extraction of the two Arabic PDFs is broken (CLAUDE.md, Known issues), so these questions are known to fail; they were left out with --skip-arabic-pdf.",
+    "questions": [
+      {
+        "id": "tp-03",
+        "category": "two_page",
+        "question": "ماذا يدفع العضو إذا فقد كتابًا مستعارًا من مكتبة الواحة؟",
+        "sources": [
+          "waha_library_ar.pdf"
+        ]
+      },
+      {
+        "id": "ar-01",
+        "category": "arabic",
+        "question": "متى تفتح مكتبة الواحة أبوابها؟",
+        "sources": [
+          "waha_library_ar.pdf"
+        ]
+      },
+      {
+        "id": "ar-02",
+        "category": "arabic",
+        "question": "في أي يوم تغلق مكتبة الواحة؟",
+        "sources": [
+          "waha_library_ar.pdf"
+        ]
+      },
+      {
+        "id": "ar-03",
+        "category": "arabic",
+        "question": "كم كتابًا يمكن للعضو استعارته من مكتبة الواحة، ولأي مدة؟",
+        "sources": [
+          "waha_library_ar.pdf"
+        ]
+      },
+      {
+        "id": "ar-04",
+        "category": "arabic",
+        "question": "كم تبلغ غرامة التأخير في مكتبة الواحة؟",
+        "sources": [
+          "waha_library_ar.pdf"
+        ]
+      },
+      {
+        "id": "ar-05",
+        "category": "arabic",
+        "question": "كم ساعة قبل الزيارة يجب حجز موعد في قاعة المخطوطات النادرة؟",
+        "sources": [
+          "waha_library_ar.pdf"
+        ]
+      },
+      {
+        "id": "ar-06",
+        "category": "arabic",
+        "question": "كم عدد قوارب الإرشاد في ميناء نورسين؟",
+        "sources": [
+          "nursin_port_ar.pdf"
+        ]
+      },
+      {
+        "id": "ar-07",
+        "category": "arabic",
+        "question": "ما هو الحد الأقصى للسرعة داخل ميناء نورسين؟",
+        "sources": [
+          "nursin_port_ar.pdf"
+        ]
+      },
+      {
+        "id": "ar-10",
+        "category": "arabic",
+        "question": "متى يُمنع التزود بالوقود في ميناء نورسين؟",
+        "sources": [
+          "nursin_port_ar.pdf"
+        ]
+      },
+      {
+        "id": "ea-01",
+        "category": "english_on_arabic",
+        "question": "What are the opening hours of the Waha Library?",
+        "sources": [
+          "waha_library_ar.pdf"
+        ]
+      },
+      {
+        "id": "ea-02",
+        "category": "english_on_arabic",
+        "question": "How many pilot boats does Nursin port have?",
+        "sources": [
+          "nursin_port_ar.pdf"
+        ]
+      },
+      {
+        "id": "ea-03",
+        "category": "english_on_arabic",
+        "question": "What is the pilotage fee at Nursin port for ships under 10,000 tons?",
+        "sources": [
+          "nursin_port_ar.pdf"
+        ]
+      },
+      {
+        "id": "ea-04",
+        "category": "english_on_arabic",
+        "question": "Is photography allowed in the Waha Library's rare manuscripts room?",
+        "sources": [
+          "waha_library_ar.pdf"
+        ]
+      },
+      {
+        "id": "cd-04",
+        "category": "cross_document",
+        "question": "Which library lets members borrow more books at once, the Waha Library or the Nakheel Library?",
+        "sources": [
+          "waha_library_ar.pdf",
+          "nakheel_library_ar.txt"
+        ]
+      }
+    ]
+  },
+  "estimate": [
+    {
+      "part": "embeddings",
+      "requests": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "note": "61 of 61 texts already cached"
+    },
+    {
+      "part": "answers (google/gemma-4-26b-a4b-it:free)",
+      "requests": 42,
+      "input_tokens": 44663,
+      "output_tokens": 12600,
+      "cost_usd": 0.0,
+      "note": ""
+    },
+    {
+      "part": "judge (nvidia/nemotron-3-ultra-550b-a55b:free)",
+      "requests": 42,
+      "input_tokens": 31878,
+      "output_tokens": 63000,
+      "cost_usd": 0.0,
+      "note": ""
+    }
+  ],
+  "extraction": [
+    {
+      "document": "northwind_handbook.pdf",
+      "format": "pdf",
+      "language": "en",
+      "facts": 17,
+      "found": 17,
+      "rate": 1.0
+    },
+    {
+      "document": "brightwater_policies.pdf",
+      "format": "pdf",
+      "language": "en",
+      "facts": 9,
+      "found": 9,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_security_policy.docx",
+      "format": "docx",
+      "language": "en",
+      "facts": 7,
+      "found": 7,
+      "rate": 1.0
+    },
+    {
+      "document": "brightwater_it_rules.docx",
+      "format": "docx",
+      "language": "en",
+      "facts": 4,
+      "found": 4,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_q3_report.txt",
+      "format": "txt",
+      "language": "en",
+      "facts": 6,
+      "found": 6,
+      "rate": 1.0
+    },
+    {
+      "document": "northwind_onboarding_memo.txt",
+      "format": "txt",
+      "language": "en",
+      "facts": 7,
+      "found": 7,
+      "rate": 1.0
+    },
+    {
+      "document": "waha_library_ar.pdf",
+      "format": "pdf",
+      "language": "ar",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    },
+    {
+      "document": "nursin_port_ar.pdf",
+      "format": "pdf",
+      "language": "ar",
+      "facts": 0,
+      "found": 0,
+      "rate": null
+    },
+    {
+      "document": "nakheel_library_ar.txt",
+      "format": "txt",
+      "language": "ar",
+      "facts": 4,
+      "found": 4,
+      "rate": 1.0
+    }
+  ],
+  "retrieval": {
+    "all": {
+      "questions": 2,
+      "hit@1": 1.0,
+      "hit@3": 1.0,
+      "hit@8": 1.0,
+      "mrr": 1.0,
+      "all_sources_found": null
+    },
+    "without_arabic_pdf": {
+      "questions": 2,
+      "hit@1": 1.0,
+      "hit@3": 1.0,
+      "hit@8": 1.0,
+      "mrr": 1.0,
+      "all_sources_found": null
+    },
+    "by_category": {
+      "single_fact": {
+        "questions": 2,
+        "hit@1": 1.0,
+        "hit@3": 1.0,
+        "hit@8": 1.0,
+        "mrr": 1.0,
+        "all_sources_found": null
+      },
+      "two_page": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "table": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "conflict": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "newer_updates_older": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "arabic": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "english_on_arabic": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "cross_document": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "unanswerable": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      },
+      "injection": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      }
+    },
+    "by_language": {
+      "en": {
+        "questions": 2,
+        "hit@1": 1.0,
+        "hit@3": 1.0,
+        "hit@8": 1.0,
+        "mrr": 1.0,
+        "all_sources_found": null
+      },
+      "ar": {
+        "questions": 0,
+        "hit@1": null,
+        "hit@3": null,
+        "hit@8": null,
+        "mrr": null,
+        "all_sources_found": null
+      }
+    }
+  },
+  "top_similarity": {
+    "answerable": {
+      "mean": 0.6562659627070888,
+      "min": 0.6383133803608746,
+      "max": 0.674218545053303
+    },
+    "unanswerable": null
+  },
+  "answers": {
+    "all": {
+      "questions": 2,
+      "judge_mean": 5,
+      "judge_errors": 0,
+      "key_fact_recall": 1.0,
+      "refusal_accuracy": null,
+      "false_refusals": 0.0,
+      "citation_correctness": 1.0,
+      "citation_coverage": 1.0,
+      "forbidden_text": 0,
+      "judge_checks_passed": null
+    },
+    "without_arabic_pdf": {
+      "questions": 2,
+      "judge_mean": 5,
+      "judge_errors": 0,
+      "key_fact_recall": 1.0,
+      "refusal_accuracy": null,
+      "false_refusals": 0.0,
+      "citation_correctness": 1.0,
+      "citation_coverage": 1.0,
+      "forbidden_text": 0,
+      "judge_checks_passed": null
+    },
+    "by_category": {
+      "single_fact": {
+        "questions": 2,
+        "judge_mean": 5,
+        "judge_errors": 0,
+        "key_fact_recall": 1.0,
+        "refusal_accuracy": null,
+        "false_refusals": 0.0,
+        "citation_correctness": 1.0,
+        "citation_coverage": 1.0,
+        "forbidden_text": 0,
+        "judge_checks_passed": null
+      },
+      "two_page": {},
+      "table": {},
+      "conflict": {},
+      "newer_updates_older": {},
+      "arabic": {},
+      "english_on_arabic": {},
+      "cross_document": {},
+      "unanswerable": {},
+      "injection": {}
+    }
+  },
+  "actual_cost": {
+    "chat": {
+      "calls": 9,
+      "cost_usd": 0.0,
+      "unknown_cost": 7,
+      "prompt_tokens": 2596,
+      "completion_tokens": 43
+    },
+    "judge": {
+      "calls": 2,
+      "cost_usd": 0.0,
+      "unknown_cost": 0,
+      "prompt_tokens": 696,
+      "completion_tokens": 224
+    }
+  },
+  "questions": [
+    {
+      "id": "sf-01",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.674218545053303,
+      "first_hit_rank": 1,
+      "judge_score": 5
+    },
+    {
+      "id": "sf-02",
+      "category": "single_fact",
+      "language": "en",
+      "arabic_pdf": false,
+      "top_similarity": 0.6383133803608746,
+      "first_hit_rank": 1,
+      "judge_score": 5
+    }
+  ]
+}

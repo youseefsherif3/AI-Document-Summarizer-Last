@@ -67,6 +67,15 @@ DEFAULT_JUDGE_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 FALLBACK_EMBEDDING_PRICE_PER_TOKEN = 0.02 / 1_000_000
 
 ARABIC_PDFS = {"waha_library_ar.pdf", "nursin_port_ar.pdf"}
+ARABIC_PDF_EXCLUSION_REASON = (
+    "Sourced from an Arabic PDF. pypdf extraction of the two Arabic PDFs is broken "
+    "(CLAUDE.md, Known issues), so these questions are known to fail; they were left out "
+    "with --skip-arabic-pdf."
+)
+
+
+def uses_arabic_pdf(item: dict) -> bool:
+    return any(source["document"] in ARABIC_PDFS for source in item["sources"])
 ESTIMATED_ANSWER_OUTPUT_TOKENS = 300
 ESTIMATED_JUDGE_OUTPUT_TOKENS = 1500  # the judge is a reasoning model
 JUDGE_MAX_TOKENS = 4000
@@ -130,14 +139,18 @@ class Settings:
     corpus_sha: str
     system_prompt_sha: str
     judge_prompt_version: str | None
+    excluded_questions: tuple[str, ...] = ()
+    exclusion_reason: str | None = None
 
     def fingerprint(self) -> str:
         return _sha(json.dumps(asdict(self), sort_keys=True).encode())
 
 
 def make_settings(mode: str, answer_model: str | None, judge_model: str | None,
-                  corpus: list[CorpusFile]) -> Settings:
+                  corpus: list[CorpusFile], excluded: list[dict] | None = None,
+                  exclusion_reason: str | None = None) -> Settings:
     answers = mode == "answers"
+    excluded = excluded or []
     return Settings(
         mode=mode,
         answer_model=answer_model if answers else None,
@@ -152,6 +165,8 @@ def make_settings(mode: str, answer_model: str | None, judge_model: str | None,
         corpus_sha=_sha(b"".join(f.data for f in corpus)),
         system_prompt_sha=_sha(chat.SYSTEM_PROMPT.encode()),
         judge_prompt_version=JUDGE_PROMPT_VERSION if answers else None,
+        excluded_questions=tuple(item["id"] for item in excluded),
+        exclusion_reason=exclusion_reason if excluded else None,
     )
 
 
@@ -477,7 +492,7 @@ async def evaluate_question(item: dict, vector: list[float], settings: Settings,
         "category": item["category"],
         "language": item["language"],
         "answerable": item["answerable"],
-        "arabic_pdf": any(s["document"] in ARABIC_PDFS for s in item["sources"]),
+        "arabic_pdf": uses_arabic_pdf(item),
         "retrieved": [asdict(r) for r in retrieved],
         "top_similarity": retrieved[0].similarity if retrieved else None,
     }
@@ -623,16 +638,55 @@ def _actual_cost(log: RunLog) -> dict:
     return totals
 
 
-def summarize(log: RunLog, questions: list[dict], corpus: list[CorpusFile]) -> dict:
+def summarize(log: RunLog, questions: list[dict], corpus: list[CorpusFile],
+              stop_reason: str | None = None) -> dict:
+    """`questions` are the questions this run should evaluate (after exclusions).
+
+    If some are not done yet, the summary is marked partial, with the reason and the
+    command that continues the run.
+    """
     header = log.header()
     results = log.results()
     categories = list(dict.fromkeys(q["category"] for q in questions))
     without_arabic_pdf = [r for r in results if not r["arabic_pdf"]]
+    all_questions = {q["id"]: q for q in load_questions()}
+    excluded_ids = header["settings"].get("excluded_questions") or []
+    done = {r["id"] for r in results}
+    remaining = [q["id"] for q in questions if q["id"] not in done]
+    partial = None
+    if remaining:
+        flags = " --skip-arabic-pdf" if excluded_ids else ""
+        partial = {
+            "evaluated": len(done),
+            "target": len(questions),
+            "remaining": remaining,
+            "reason": stop_reason or next(
+                (line["reason"] for line in reversed(log.lines()) if line["type"] == "stopped"),
+                "The run has not finished.",
+            ),
+            "resume_command": f"python -m evals.run_evals --mode {header['settings']['mode']}"
+                              f"{flags} --resume {log.run_id}",
+        }
     return {
         "run_id": log.run_id,
         "started_at": header["started_at"],
         "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "settings": header["settings"],
+        "partial": partial,
+        "evaluated_questions": len(results),
+        "total_questions": len(all_questions),
+        "excluded": {
+            "reason": header["settings"].get("exclusion_reason"),
+            "questions": [
+                {
+                    "id": qid,
+                    "category": all_questions[qid]["category"],
+                    "question": all_questions[qid]["question"],
+                    "sources": [s["document"] for s in all_questions[qid]["sources"]],
+                }
+                for qid in excluded_ids
+            ],
+        },
         "estimate": next((l["estimate"] for l in log.lines() if l["type"] == "estimate"), None),
         "extraction": extraction_quality(questions, corpus),
         "retrieval": {
@@ -670,9 +724,23 @@ def _fmt(value, percent=True) -> str:
 
 def render_report(summary: dict) -> str:
     s = summary["settings"]
+    partial = summary.get("partial")
     lines = [
-        f"# Eval report: {summary['run_id']}",
+        f"# Eval report: {summary['run_id']}" + (" (PARTIAL)" if partial else ""),
         "",
+    ]
+    if partial:
+        lines += [
+            f"> **Partial report.** {partial['evaluated']} of the {partial['target']} questions "
+            f"in this run were evaluated; the other {len(partial['remaining'])} were not.",
+            f"> **Why:** {partial['reason']}",
+            f"> **Not evaluated yet:** {', '.join(partial['remaining'])}",
+            f"> **To finish the run:** `{partial['resume_command']}` (from `backend/`; the "
+            "progress file in `evals/runs/` is needed). All numbers below cover only the "
+            "evaluated questions.",
+            "",
+        ]
+    lines += [
         f"- Mode: **{s['mode']}** · retrieval: {s['retrieval_mode']} · top_k: {s['top_k']} · "
         f"min_similarity: {s['min_similarity']}",
         f"- Embedding model: `{s['embedding_model']}`",
@@ -682,9 +750,31 @@ def render_report(summary: dict) -> str:
                      f"({s['judge_prompt_version']}). Answer scores describe this answer model, "
                      "not the production chat model.")
     lines += [
+        f"- Questions evaluated: **{summary['evaluated_questions']} of {summary['total_questions']}**"
+        + (f" ({len(summary['excluded']['questions'])} excluded, listed below)"
+           if summary["excluded"]["questions"] else ""),
         f"- Questions sha: `{s['questions_sha']}` · corpus sha: `{s['corpus_sha']}` · "
         f"system prompt sha: `{s['system_prompt_sha']}`",
         f"- Started {summary['started_at']}, finished {summary['finished_at']}",
+    ]
+    excluded = summary["excluded"]
+    if excluded["questions"]:
+        lines += [
+            "",
+            f"## Excluded questions ({len(excluded['questions'])})",
+            "",
+            f"**Why:** {excluded['reason']} All other numbers in this report are for the "
+            f"{summary['evaluated_questions']} evaluated questions only.",
+            "",
+            "| ID | Category | Question | Expected source(s) |",
+            "|---|---|---|---|",
+        ]
+        lines += [
+            f"| {q['id']} | {q['category']} | {q['question']} | "
+            f"{', '.join(f'`{d}`' for d in q['sources'])} |"
+            for q in excluded["questions"]
+        ]
+    lines += [
         "",
         "## Extraction quality (expected key facts found in the extracted text)",
         "",
@@ -815,21 +905,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--answer-model", help="override EVAL_ANSWER_MODEL")
     parser.add_argument("--judge-model", help="override OPENROUTER_JUDGE_MODEL")
     parser.add_argument("--label", help="name for the report files")
+    parser.add_argument("--report-only", action="store_true",
+                        help="with --resume: write a (possibly partial) report from the saved "
+                             "progress, without calling any model")
+    parser.add_argument("--stop-reason",
+                        help="with --report-only: why the run stopped, shown in a partial report")
+    parser.add_argument("--skip-arabic-pdf", action="store_true",
+                        help="leave out the questions sourced from the two Arabic PDFs "
+                             "(known to fail); the report lists them")
     return parser.parse_args(argv)
 
 
 async def main_async(args: argparse.Namespace) -> int:
     questions = load_questions()
+    excluded = [q for q in questions if uses_arabic_pdf(q)] if args.skip_arabic_pdf else []
+    questions = [q for q in questions if q not in excluded]
     corpus = prepare_corpus()
     answer_model = args.answer_model or os.getenv("EVAL_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL
     judge_model = args.judge_model or os.getenv("OPENROUTER_JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
     warnings = check_models(answer_model, judge_model) if args.mode == "answers" else []
-    settings = make_settings(args.mode, answer_model, judge_model, corpus)
+    settings = make_settings(args.mode, answer_model, judge_model, corpus,
+                             excluded=excluded, exclusion_reason=ARABIC_PDF_EXCLUSION_REASON)
+    if excluded:
+        print(f"Excluding {len(excluded)} Arabic-PDF questions: "
+              f"{', '.join(q['id'] for q in excluded)}\n")
     pace_seconds = float(os.getenv("EVAL_MIN_SECONDS_BETWEEN_CALLS", "4"))
 
     resumed = None
     if args.resume:
         resumed = RunLog.resume(RUNS_DIR / f"{args.resume}.jsonl", settings)
+    elif args.report_only:
+        raise SystemExit("--report-only needs --resume <run-id>.")
+    if args.report_only:
+        summary = summarize(resumed, questions, corpus, stop_reason=args.stop_reason)
+        md_path, json_path = write_report(summary, args.label)
+        state = "partial" if summary["partial"] else "complete"
+        print(f"Wrote a {state} report ({summary['evaluated_questions']} of {len(questions)} "
+              f"questions):\n  {md_path}\n  {json_path}")
+        return 0
     pending = [q for q in questions if not resumed or q["id"] not in resumed.done_ids()]
 
     cache = EmbeddingCache(CACHE_PATH, settings.embedding_model, embed_texts)
@@ -861,8 +974,11 @@ async def main_async(args: argparse.Namespace) -> int:
         await run(log, settings, questions, corpus, cache, pace_seconds=pace_seconds,
                   database_url=url)
     except RunStopped as stopped:
+        log.append({"type": "stopped", "reason": str(stopped),
+                    "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
         print(f"\nStopped: {stopped}\nProgress is saved. Continue later with:\n"
-              f"  python -m evals.run_evals --mode {args.mode} --resume {log.run_id}")
+              f"  python -m evals.run_evals --mode {args.mode}"
+              f"{' --skip-arabic-pdf' if args.skip_arabic_pdf else ''} --resume {log.run_id}")
         return 2
 
     md_path, json_path = write_report(summarize(log, questions, corpus), args.label)

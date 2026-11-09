@@ -355,6 +355,74 @@ def test_answers_run_stops_and_resumes_without_redoing_questions(corpus, tmp_pat
     assert summary["answers"]["all"]["judge_checks_passed"] == 1.0
 
 
+def test_skip_arabic_pdf_excludes_exactly_the_14_arabic_pdf_questions():
+    excluded = [q["id"] for q in QUESTIONS if runner.uses_arabic_pdf(q)]
+
+    assert len(excluded) == 14
+    assert {"ar-08", "ar-09", "ea-05"}.isdisjoint(excluded)  # Arabic TXT questions stay in
+    assert {"tp-03", "cd-04", "ea-01"} <= set(excluded)
+
+
+def test_report_states_which_questions_were_excluded_and_why(corpus, tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "REPORTS_DIR", tmp_path / "reports")
+    excluded = [q for q in QUESTIONS if runner.uses_arabic_pdf(q)]
+    kept = [q for q in QUESTIONS if q not in excluded]
+    settings = runner.make_settings("retrieval", None, None, corpus, excluded=excluded,
+                                    exclusion_reason=runner.ARABIC_PDF_EXCLUSION_REASON)
+    log = runner.RunLog.start(tmp_path / "run-excluded.jsonl", settings)
+
+    asyncio.run(runner.run(log, settings, kept, corpus, make_cache(tmp_path)))
+    summary = runner.summarize(log, kept, corpus)
+    markdown = runner.render_report(summary)
+
+    assert (summary["evaluated_questions"], summary["total_questions"]) == (42, 56)
+    assert "Questions evaluated: **42 of 56** (14 excluded, listed below)" in markdown
+    assert "## Excluded questions (14)" in markdown
+    assert "pypdf extraction of the two Arabic PDFs is broken" in markdown
+    for item in excluded:
+        assert f"| {item['id']} | {item['category']} |" in markdown
+    assert settings.fingerprint() != runner.make_settings("retrieval", None, None, corpus).fingerprint()
+
+
+def test_a_stopped_run_gives_a_clearly_marked_partial_report(corpus, tmp_path):
+    questions = [BY_ID["sf-01"], BY_ID["sf-02"], BY_ID["un-04"]]
+    settings = settings_for("answers", corpus)
+    log = runner.RunLog.start(tmp_path / "run-partial.jsonl", settings)
+
+    async def answer_fn(prepared, model):
+        if prepared.question == BY_ID["sf-02"]["question"]:
+            raise AIRateLimitError("limited", detail="free-models-per-day")
+        return "Maren Okafor [1]."
+
+    async def judge_fn(messages, model):
+        return '{"score": 5, "reason": "Correct.", "checks": []}'
+
+    with pytest.raises(runner.RunStopped):
+        asyncio.run(runner.run(log, settings, questions, corpus, make_cache(tmp_path),
+                               answer_fn=answer_fn, judge_fn=judge_fn, sleep=no_sleep))
+    log.append({"type": "stopped", "reason": "answer sf-02: daily limit reached"})
+
+    summary = runner.summarize(log, questions, corpus)
+    markdown = runner.render_report(summary)
+
+    assert summary["partial"]["evaluated"] == 1 and summary["partial"]["target"] == 3
+    assert summary["partial"]["remaining"] == ["sf-02", "un-04"]
+    assert markdown.startswith(f"# Eval report: {log.run_id} (PARTIAL)")
+    assert "1 of the 3 questions in this run were evaluated" in markdown
+    assert "**Why:** answer sf-02: daily limit reached" in markdown
+    assert f"--resume {log.run_id}" in markdown
+
+
+def test_a_finished_run_is_not_partial(corpus, tmp_path):
+    settings = settings_for("retrieval", corpus)
+    log = runner.RunLog.start(tmp_path / "run-full.jsonl", settings)
+    questions = [BY_ID["sf-01"]]
+
+    asyncio.run(runner.run(log, settings, questions, corpus, make_cache(tmp_path)))
+
+    assert runner.summarize(log, questions, corpus)["partial"] is None
+
+
 def test_resume_with_changed_settings_is_refused(corpus, tmp_path):
     log = runner.RunLog.start(tmp_path / "run.jsonl", settings_for("answers", corpus))
 
