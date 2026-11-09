@@ -375,8 +375,9 @@ def test_report_states_which_questions_were_excluded_and_why(corpus, tmp_path, m
     summary = runner.summarize(log, kept, corpus)
     markdown = runner.render_report(summary)
 
-    assert (summary["evaluated_questions"], summary["total_questions"]) == (42, 56)
-    assert "Questions evaluated: **42 of 56** (14 excluded, listed below)" in markdown
+    total = len(QUESTIONS)
+    assert (summary["evaluated_questions"], summary["total_questions"]) == (total - 14, total)
+    assert f"Questions evaluated: **{total - 14} of {total}** (14 excluded, listed below)" in markdown
     assert "## Excluded questions (14)" in markdown
     assert "pypdf extraction of the two Arabic PDFs is broken" in markdown
     for item in excluded:
@@ -421,6 +422,58 @@ def test_a_finished_run_is_not_partial(corpus, tmp_path):
     asyncio.run(runner.run(log, settings, questions, corpus, make_cache(tmp_path)))
 
     assert runner.summarize(log, questions, corpus)["partial"] is None
+
+
+def test_category_runs_record_the_category_and_resume_only_with_it(corpus, tmp_path):
+    plain = settings_for("retrieval", corpus)
+    follow_up = runner.make_settings("retrieval", None, None, corpus, categories=["follow_up"])
+
+    # Unset, the new setting stays out of the fingerprint, so older runs still resume.
+    assert "categories" not in plain.as_dict()
+    assert follow_up.as_dict()["categories"] == ("follow_up",)
+    assert plain.fingerprint() != follow_up.fingerprint()
+    log = runner.RunLog.start(tmp_path / "run-category.jsonl", follow_up)
+    with pytest.raises(SystemExit, match="categories"):
+        runner.RunLog.resume(log.path, plain)
+    assert runner.resume_flags(False, ["follow_up"]) == " --category follow_up"
+
+
+def test_category_option_selects_only_those_questions(monkeypatch):
+    seen = {}
+
+    def fake_settings(*args, **kwargs):
+        seen["categories"] = kwargs["categories"]
+        raise SystemExit("stop here")
+
+    monkeypatch.setattr(runner, "prepare_corpus", lambda: [])
+    monkeypatch.setattr(runner, "make_settings", fake_settings)
+    with pytest.raises(SystemExit, match="stop here"):
+        asyncio.run(runner.main_async(runner.parse_args(["--category", "follow_up", "--estimate-only"])))
+    assert seen["categories"] == ["follow_up"]
+    with pytest.raises(SystemExit, match="No questions in category: nope"):
+        asyncio.run(runner.main_async(runner.parse_args(["--category", "nope"])))
+
+
+def test_answers_mode_sends_the_follow_up_history(corpus, tmp_path):
+    item = BY_ID["fu-01"]
+    settings = settings_for("answers", corpus)
+    log = runner.RunLog.start(tmp_path / "run-history.jsonl", settings)
+    sent = []
+
+    async def answer_fn(prepared, model):
+        sent.append(prepared.messages)
+        return "Brightwater gives 21 days [1]."
+
+    async def judge_fn(messages, model):
+        return '{"score": 5, "reason": "Correct.", "checks": []}'
+
+    asyncio.run(runner.run(log, settings, [item], corpus, make_cache(tmp_path),
+                           answer_fn=answer_fn, judge_fn=judge_fn, sleep=no_sleep))
+
+    [messages] = sent
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert messages[1]["content"] == item["history"][0]["content"]
+    assert messages[-1]["content"].endswith("Question: And what about Brightwater?")
 
 
 def test_resume_with_changed_settings_is_refused(corpus, tmp_path):

@@ -82,5 +82,13 @@ python -m evals.run_evals --mode answers --resume <run-id>
 ```
 
 A resume is refused if the settings changed (models, retrieval settings, questions or corpus).
+
+Evaluate one category only (repeatable), for example the follow-up questions, whose
+`history` field holds the earlier conversation:
+
+```bash
+python -m evals.run_evals --category follow_up
+```
+
 When the run finishes, the report is written to `reports/<timestamp>-<label>.md` and `.json`;
 `--label` names it. Pass `--yes` to skip the confirmation only after the estimate was approved.

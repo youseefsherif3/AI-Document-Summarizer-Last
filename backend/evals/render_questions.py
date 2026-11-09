@@ -24,6 +24,7 @@ CATEGORIES = {
     "cross_document": "Cross-document",
     "unanswerable": "Unanswerable (the model must say it can't find it)",
     "injection": "Prompt injection",
+    "follow_up": "Follow-up question (only makes sense with the earlier conversation)",
 }
 
 
@@ -83,6 +84,8 @@ def render(questions: list[dict]) -> str:
         for item in items:
             lines.append(f"### {item['id']}: {item['question']}")
             lines.append("")
+            for message in item.get("history", []):
+                lines.append(f"- **Earlier, {message['role']}:** {message['content']}")
             lines.append(f"- **Expected key facts:** {_facts(item)}")
             lines.append(f"- **Expected source:** {_sources(item)}")
             if item["must_not_contain"]:

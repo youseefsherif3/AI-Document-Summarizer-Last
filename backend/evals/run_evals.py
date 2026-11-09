@@ -76,6 +76,11 @@ ARABIC_PDF_EXCLUSION_REASON = (
 
 def uses_arabic_pdf(item: dict) -> bool:
     return any(source["document"] in ARABIC_PDFS for source in item["sources"])
+
+
+def history_of(item: dict) -> list[chat.HistoryMessage]:
+    """The earlier conversation of a follow-up question (empty for the others)."""
+    return [chat.HistoryMessage(m["role"], m["content"]) for m in item.get("history", [])]
 ESTIMATED_ANSWER_OUTPUT_TOKENS = 300
 ESTIMATED_JUDGE_OUTPUT_TOKENS = 1500  # the judge is a reasoning model
 JUDGE_MAX_TOKENS = 4000
@@ -141,15 +146,29 @@ class Settings:
     judge_prompt_version: str | None
     excluded_questions: tuple[str, ...] = ()
     exclusion_reason: str | None = None
+    # Added after step 15. Left out of the fingerprint while unset, so runs started
+    # before they existed can still be resumed.
+    categories: tuple[str, ...] | None = None
 
     def fingerprint(self) -> str:
-        return _sha(json.dumps(asdict(self), sort_keys=True).encode())
+        return _sha(json.dumps(self.as_dict(), sort_keys=True).encode())
+
+    def as_dict(self) -> dict:
+        data = asdict(self)
+        for key in OPTIONAL_SETTINGS:
+            if data[key] is None:
+                del data[key]
+        return data
+
+
+OPTIONAL_SETTINGS = ("categories",)
 
 
 def make_settings(mode: str, answer_model: str | None, judge_model: str | None,
                   corpus: list[CorpusFile], excluded: list[dict] | None = None,
                   exclusion_reason: str | None = None,
-                  retrieval: str | None = None) -> Settings:
+                  retrieval: str | None = None,
+                  categories: list[str] | None = None) -> Settings:
     answers = mode == "answers"
     excluded = excluded or []
     return Settings(
@@ -168,6 +187,7 @@ def make_settings(mode: str, answer_model: str | None, judge_model: str | None,
         judge_prompt_version=JUDGE_PROMPT_VERSION if answers else None,
         excluded_questions=tuple(item["id"] for item in excluded),
         exclusion_reason=exclusion_reason if excluded else None,
+        categories=tuple(categories) if categories else None,
     )
 
 
@@ -373,7 +393,7 @@ class RunLog:
         header = {
             "type": "header",
             "fingerprint": settings.fingerprint(),
-            "settings": asdict(settings),
+            "settings": settings.as_dict(),
             "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         path.write_text(json.dumps(header, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -386,10 +406,11 @@ class RunLog:
         log = cls(path)
         header = log.header()
         if header["fingerprint"] != settings.fingerprint():
-            changed = [
-                key for key, value in asdict(settings).items()
-                if header["settings"].get(key) != value
-            ]
+            # Compare as saved (JSON turns tuples into lists), including keys only one side has.
+            current = json.loads(json.dumps(settings.as_dict()))
+            saved = header["settings"]
+            changed = [key for key in sorted(set(current) | set(saved))
+                       if saved.get(key) != current.get(key)]
             raise SystemExit(
                 f"Cannot resume {log.run_id}: settings changed ({', '.join(changed)}). "
                 "Start a new run instead."
@@ -504,7 +525,8 @@ async def evaluate_question(item: dict, vector: list[float], settings: Settings,
     if settings.mode == "answers":
         sources = chat.sources_from_matches(matches)
         prepared = chat.PreparedAnswer(
-            item["question"], sources, chat.build_messages(item["question"], sources)
+            item["question"], sources,
+            chat.build_messages(item["question"], sources, history_of(item)),
         )
         answer = await call_with_retries(
             lambda: answer_fn(prepared, settings.answer_model), f"answer {item['id']}", sleep
@@ -531,6 +553,12 @@ async def evaluate_question(item: dict, vector: list[float], settings: Settings,
 
 
 # --- Report --------------------------------------------------------------------------
+
+
+def resume_flags(skip_arabic_pdf: bool, categories) -> str:
+    """The options a resume must repeat so its settings match the original run."""
+    flags = " --skip-arabic-pdf" if skip_arabic_pdf else ""
+    return flags + "".join(f" --category {c}" for c in categories or [])
 
 
 def _rate(values: list[bool]) -> float | None:
@@ -657,7 +685,7 @@ def summarize(log: RunLog, questions: list[dict], corpus: list[CorpusFile],
     remaining = [q["id"] for q in questions if q["id"] not in done]
     partial = None
     if remaining:
-        flags = " --skip-arabic-pdf" if excluded_ids else ""
+        flags = resume_flags(bool(excluded_ids), header["settings"].get("categories"))
         partial = {
             "evaluated": len(done),
             "target": len(questions),
@@ -747,6 +775,8 @@ def render_report(summary: dict) -> str:
         f"min_similarity: {s['min_similarity']}",
         f"- Embedding model: `{s['embedding_model']}`",
     ]
+    if s.get("categories"):
+        lines.append(f"- Categories evaluated: {', '.join(s['categories'])} (--category)")
     if s["mode"] == "answers":
         lines.append(f"- Answer model: `{s['answer_model']}` · judge: `{s['judge_model']}` "
                      f"({s['judge_prompt_version']}). Answer scores describe this answer model, "
@@ -915,6 +945,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-arabic-pdf", action="store_true",
                         help="leave out the questions sourced from the two Arabic PDFs "
                              "(known to fail); the report lists them")
+    parser.add_argument("--category", action="append", metavar="CATEGORY",
+                        help="evaluate only this question category (repeatable), "
+                             "e.g. --category follow_up")
     parser.add_argument("--retrieval-mode", choices=["vector", "hybrid"],
                         help="override RETRIEVAL_MODE (default: hybrid)")
     return parser.parse_args(argv)
@@ -922,6 +955,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 async def main_async(args: argparse.Namespace) -> int:
     questions = load_questions()
+    if args.category:
+        unknown = sorted(set(args.category) - {q["category"] for q in questions})
+        if unknown:
+            raise SystemExit(f"No questions in category: {', '.join(unknown)}")
+        questions = [q for q in questions if q["category"] in args.category]
     excluded = [q for q in questions if uses_arabic_pdf(q)] if args.skip_arabic_pdf else []
     questions = [q for q in questions if q not in excluded]
     corpus = prepare_corpus()
@@ -930,7 +968,7 @@ async def main_async(args: argparse.Namespace) -> int:
     warnings = check_models(answer_model, judge_model) if args.mode == "answers" else []
     settings = make_settings(args.mode, answer_model, judge_model, corpus,
                              excluded=excluded, exclusion_reason=ARABIC_PDF_EXCLUSION_REASON,
-                             retrieval=args.retrieval_mode)
+                             retrieval=args.retrieval_mode, categories=args.category)
     if excluded:
         print(f"Excluding {len(excluded)} Arabic-PDF questions: "
               f"{', '.join(q['id'] for q in excluded)}\n")
@@ -983,7 +1021,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
         print(f"\nStopped: {stopped}\nProgress is saved. Continue later with:\n"
               f"  python -m evals.run_evals --mode {args.mode}"
-              f"{' --skip-arabic-pdf' if args.skip_arabic_pdf else ''} --resume {log.run_id}")
+              f"{resume_flags(args.skip_arabic_pdf, args.category)} --resume {log.run_id}")
         return 2
 
     md_path, json_path = write_report(summarize(log, questions, corpus), args.label)

@@ -25,6 +25,8 @@ FIELDS = {
     "id", "category", "language", "question", "answerable",
     "key_facts", "sources", "must_not_contain", "judge_checks", "notes",
 }
+# Only follow-up questions carry the earlier conversation.
+OPTIONAL_FIELDS = {"history"}
 # Categories allowed to have fewer than 3 questions, with their minimum: the corpus
 # currently has only one true conflict and two newer-updates-older facts.
 SMALL_CATEGORIES = {"conflict": 1, "newer_updates_older": 2}
@@ -61,7 +63,7 @@ def test_ids_are_unique():
 
 @pytest.mark.parametrize("item", QUESTIONS, ids=lambda item: item["id"])
 def test_question_is_well_formed(item):
-    assert set(item) == FIELDS
+    assert FIELDS <= set(item) <= FIELDS | OPTIONAL_FIELDS
     assert item["language"] in ("en", "ar")
     assert bool(ARABIC.search(item["question"])) == (item["language"] == "ar")
     assert isinstance(item["notes"], str)
@@ -97,6 +99,18 @@ def test_expected_sources_exist_and_contain_every_key_fact(item):
     for group in item["key_facts"]:
         # At least one alternative must be in the source text itself (authoring check).
         assert contains_any(combined, group), f"{group} not found on the expected pages"
+
+
+@pytest.mark.parametrize("item", QUESTIONS, ids=lambda item: item["id"])
+def test_follow_up_questions_and_only_they_have_a_history(item):
+    if item["category"] != "follow_up":
+        assert "history" not in item
+        return
+    history = item["history"]
+    # Earlier turns alternate user / assistant and end with the assistant's reply.
+    assert history and len(history) % 2 == 0
+    assert [m["role"] for m in history] == ["user", "assistant"] * (len(history) // 2)
+    assert all(set(m) == {"role", "content"} and m["content"].strip() for m in history)
 
 
 def test_two_page_questions_really_span_two_pages():
