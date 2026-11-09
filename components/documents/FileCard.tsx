@@ -44,9 +44,9 @@ export default function FileCard({
     document.status === "extracting" || document.status === "summarizing";
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-[#111827] p-5 transition hover:border-violet-500/30">
+    <div className="min-w-0 rounded-2xl border border-white/10 bg-[#111827] p-4 transition hover:border-violet-500/30 sm:p-5">
       {/* File Information */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-3 sm:gap-4">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-violet-500/10">
             <Icon size={23} className="text-violet-400" />
@@ -68,7 +68,7 @@ export default function FileCard({
             type="button"
             onClick={() => onCancel?.(document.id)}
             aria-label={`Cancel ${document.name}`}
-            className="rounded-lg p-2 text-gray-500 transition hover:bg-red-500/10 hover:text-red-400"
+            className="shrink-0 rounded-lg p-2 text-gray-500 transition hover:bg-red-500/10 hover:text-red-400"
           >
             <X size={17} />
           </button>
@@ -77,7 +77,7 @@ export default function FileCard({
             type="button"
             onClick={() => onRemove(document.id)}
             aria-label={`Remove ${document.name}`}
-            className="rounded-lg p-2 text-gray-500 transition hover:bg-red-500/10 hover:text-red-400"
+            className="shrink-0 rounded-lg p-2 text-gray-500 transition hover:bg-red-500/10 hover:text-red-400"
           >
             <Trash2 size={17} />
           </button>
@@ -105,7 +105,7 @@ export default function FileCard({
 
       {/* Error */}
       {document.status === "failed" && document.error && (
-        <p className="mt-3 text-xs text-red-400">{document.error}</p>
+        <p className="mt-3 text-xs text-red-400 [overflow-wrap:anywhere]">{document.error}</p>
       )}
 
       {/* View Summary */}

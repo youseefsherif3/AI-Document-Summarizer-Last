@@ -212,9 +212,9 @@ export default function ChatPage() {
         {/* Conversation Area */}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {showWelcomeScreen ? (
-            /* Welcome Screen */
-            <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-8 text-center">
-              <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-500/10">
+            /* Welcome Screen (center-safe: centered when it fits, scrolls from the top when not) */
+            <div className="scrollbar-hidden flex min-h-0 flex-1 flex-col items-center justify-center-safe overflow-y-auto py-6 text-center sm:py-8">
+              <div className="mb-5 flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-violet-500/10">
                 <Sparkles size={30} className="text-violet-400" />
               </div>
 
@@ -247,7 +247,7 @@ export default function ChatPage() {
           ) : (
             /* Chat Messages */
             <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto w-full max-w-4xl space-y-8 py-4">
+              <div className="mx-auto w-full max-w-4xl space-y-6 py-4 sm:space-y-8">
                 {messages.map((chatMessage) => {
                   const isUser = chatMessage.role === "user";
                   const isAnswer = !isUser && chatMessage.sources !== undefined;
@@ -259,18 +259,20 @@ export default function ChatPage() {
                   return (
                     <div
                       key={chatMessage.id}
-                      className={`flex gap-3 ${
+                      className={`flex gap-2 sm:gap-3 ${
                         isUser ? "justify-end" : "justify-start"
                       }`}
                     >
                       {!isUser && (
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-500/10">
+                        <div className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 sm:flex">
                           <Bot size={19} className="text-violet-400" />
                         </div>
                       )}
 
                       <div
-                        className={`max-w-[85%] rounded-2xl px-5 py-4 sm:max-w-[75%] ${
+                        className={`min-w-0 rounded-2xl px-4 py-3 sm:px-5 sm:py-4 ${
+                          isAnswer ? "max-w-full sm:max-w-[75%]" : "max-w-[85%] sm:max-w-[75%]"
+                        } ${
                           isUser
                             ? "bg-violet-600 text-white"
                             : "bg-[#111827] text-gray-200"
@@ -311,7 +313,7 @@ export default function ChatPage() {
                                   size={16}
                                   className="mt-0.5 shrink-0 text-red-400"
                                 />
-                                <p className="text-sm text-red-300">
+                                <p className="min-w-0 text-sm text-red-300 [overflow-wrap:anywhere]">
                                   {chatMessage.error}
                                 </p>
                               </div>
@@ -332,14 +334,14 @@ export default function ChatPage() {
                             />
                           </>
                         ) : (
-                          <p className="whitespace-pre-wrap text-sm leading-7">
+                          <p className="whitespace-pre-wrap text-sm leading-7 [overflow-wrap:anywhere]">
                             {chatMessage.content}
                           </p>
                         )}
                       </div>
 
                       {isUser && (
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500/10">
+                        <div className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500/10 sm:flex">
                           <UserRound size={19} className="text-blue-400" />
                         </div>
                       )}
@@ -353,18 +355,18 @@ export default function ChatPage() {
           )}
         </div>
 
-        {/* Uploaded Files */}
+        {/* Uploaded Files (one sideways-scrolling row below lg, so messages keep their height) */}
         {documents.length > 0 && (
-          <div className="mt-5 flex shrink-0 flex-wrap gap-3">
+          <div className="mt-3 flex shrink-0 gap-2 overflow-x-auto pb-1 sm:mt-5 sm:gap-3 lg:max-h-36 lg:flex-wrap lg:overflow-y-auto lg:pb-0">
             {documents.map((document) => (
               <div
                 key={document.id}
-                className="flex items-center gap-3 rounded-xl border border-white/10 bg-[#111827] px-3 py-2"
+                className="flex shrink-0 items-center gap-3 rounded-xl border border-white/10 bg-[#111827] px-3 py-2"
               >
                 <FileText size={20} className="shrink-0 text-violet-400" />
 
                 <div className="min-w-0">
-                  <p className="max-w-48 truncate text-sm text-white">
+                  <p className="max-w-36 truncate text-sm text-white sm:max-w-48">
                     {document.name}
                   </p>
 
@@ -394,7 +396,7 @@ export default function ChatPage() {
 
         {/* Upload Error Messages */}
         {errorMessages.length > 0 && (
-          <div className="mt-3 shrink-0 rounded-xl border border-red-500/20 bg-red-500/5 p-3">
+          <div className="mt-3 max-h-28 shrink-0 overflow-y-auto rounded-xl border border-red-500/20 bg-red-500/5 p-3">
             <div className="mb-2 flex items-center gap-2">
               <AlertCircle size={16} className="text-red-400" />
               <h3 className="text-sm font-semibold text-red-400">
@@ -404,7 +406,7 @@ export default function ChatPage() {
 
             <ul className="space-y-1">
               {errorMessages.map((message, index) => (
-                <li key={index} className="text-sm text-gray-300">
+                <li key={index} className="text-sm text-gray-300 [overflow-wrap:anywhere]">
                   • {message}
                 </li>
               ))}
@@ -437,18 +439,18 @@ export default function ChatPage() {
             }}
             placeholder="Ask anything about your documents..."
             rows={hasStartedChat ? 1 : 2}
-            className={`w-full resize-none bg-transparent text-sm text-white outline-none placeholder:text-gray-500 transition-all duration-300 ${
+            className={`w-full resize-none bg-transparent text-base text-white outline-none sm:text-sm placeholder:text-gray-500 transition-all duration-300 ${
               hasStartedChat ? "p-2" : "p-3"
             }`}
           />
 
           <div
-            className={`flex items-center justify-between border-t border-white/10 ${
+            className={`flex items-center justify-between gap-2 border-t border-white/10 ${
               hasStartedChat ? "pt-2" : "pt-3"
             }`}
           >
             {/* Attach Files */}
-            <div>
+            <div className="min-w-0">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -462,11 +464,17 @@ export default function ChatPage() {
                 type="button"
                 disabled={remainingSlots <= 0}
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-400 transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm text-gray-400 sm:px-3 transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <Paperclip size={18} />
-                Attach files
-                <span className="text-xs text-gray-600">
+                <Paperclip size={18} className="shrink-0" />
+                <span className="whitespace-nowrap">Attach files</span>
+                {/* Shorter on phones so Send still fits on the same row */}
+                <span className="whitespace-nowrap text-xs text-gray-600 sm:hidden">
+                  {remainingSlots > 0
+                    ? `(${remainingSlots}/${MAX_CONCURRENT_UPLOADS} free)`
+                    : "(busy)"}
+                </span>
+                <span className="hidden text-xs text-gray-600 sm:inline">
                   {remainingSlots > 0
                     ? `(${remainingSlots} of ${MAX_CONCURRENT_UPLOADS} slots free)`
                     : "(wait for uploads to finish)"}
@@ -479,7 +487,7 @@ export default function ChatPage() {
               <button
                 type="button"
                 onClick={stopAnswer}
-                className="flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-gray-200 transition hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-300"
+                className="flex shrink-0 items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-gray-200 transition hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-300"
               >
                 Stop
                 <Square size={14} className="fill-current" />
@@ -489,7 +497,7 @@ export default function ChatPage() {
                 type="button"
                 onClick={handleSend}
                 disabled={!canSend}
-                className="flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl bg-violet-600 px-3 py-2 sm:px-4 text-sm font-medium text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {message.trim() ? "Send" : "Send Summary"}
                 <Send size={16} />
@@ -499,7 +507,7 @@ export default function ChatPage() {
         </div>
 
         {/* Disclaimer */}
-        <p className="mt-3 shrink-0 text-center text-xs text-gray-600">
+        <p className="mt-2 shrink-0 text-center text-xs text-gray-600 sm:mt-3">
           AI-generated responses may contain inaccuracies.
         </p>
       </div>

@@ -1,24 +1,40 @@
 "use client";
 
-import { Bell, Search, UserRound } from "lucide-react";
+import { Bell, Menu, Search, UserRound } from "lucide-react";
 
-export default function Header() {
+interface HeaderProps {
+  // Opens the sidebar drawer on phones.
+  onMenuClick: () => void;
+}
+
+export default function Header({ onMenuClick }: HeaderProps) {
   return (
-    <header className="flex h-20 items-center justify-between border-b border-white/10 bg-[#111827] px-8">
-      <div>
-        <h2 className="text-lg font-semibold text-white">Dashboard</h2>
-        <p className="text-sm text-gray-500">
-          Manage and summarize your documents
-        </p>
+    <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-[#111827] px-4 sm:h-20 sm:gap-5 sm:px-6 lg:px-8">
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          onClick={onMenuClick}
+          aria-label="Open menu"
+          className="-ml-2 shrink-0 rounded-xl p-2 text-gray-400 transition hover:bg-white/5 hover:text-white md:hidden"
+        >
+          <Menu size={20} />
+        </button>
+
+        <div className="min-w-0">
+          <h2 className="truncate text-lg font-semibold text-white">Dashboard</h2>
+          <p className="hidden truncate text-sm text-gray-500 sm:block">
+            Manage and summarize your documents
+          </p>
+        </div>
       </div>
 
-      <div className="flex items-center gap-5">
-        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-[#1F2937] px-3 py-2">
+      <div className="flex shrink-0 items-center gap-2 sm:gap-5">
+        <div className="hidden items-center gap-2 rounded-xl border border-white/10 bg-[#1F2937] px-3 py-2 sm:flex">
           <Search size={17} className="text-gray-500" />
           <input
             type="text"
             placeholder="Search documents..."
-            className="w-44 bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
+            className="w-32 bg-transparent text-sm text-white outline-none placeholder:text-gray-500 lg:w-44"
           />
         </div>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
 
@@ -10,15 +10,27 @@ interface MainLayoutProps {
 }
 
 export default function MainLayout({ children, scrollable = true }: MainLayoutProps) {
+  // Phone only: the sidebar opens as a drawer from the menu button.
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
+
   return (
     <div className="flex h-dvh overflow-hidden bg-[#0B1120]">
-      <Sidebar />
+      <Sidebar open={menuOpen} onClose={() => setMenuOpen(false)} />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <Header />
+        <Header onMenuClick={() => setMenuOpen(true)} />
 
         <main
-          className={`min-h-0 flex-1 p-8 ${
+          className={`min-h-0 flex-1 p-4 sm:p-6 lg:p-8 ${
             scrollable ? "overflow-y-auto custom-scrollbar" : "overflow-hidden"
           }`}
         >

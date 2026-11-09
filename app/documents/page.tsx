@@ -25,7 +25,7 @@ export default function DocumentsPage() {
 
   return (
     <MainLayout>
-      <div className="mx-auto max-w-6xl space-y-8">
+      <div className="mx-auto max-w-6xl space-y-6 sm:space-y-8">
         {/* Page Header */}
         <section>
           <h1 className="text-2xl font-bold text-white">My Documents</h1>
@@ -57,7 +57,7 @@ export default function DocumentsPage() {
                   className="flex items-start gap-2 text-sm text-gray-300"
                 >
                   <X size={15} className="mt-0.5 shrink-0 text-red-400" />
-                  <span>{message}</span>
+                  <span className="min-w-0 [overflow-wrap:anywhere]">{message}</span>
                 </li>
               ))}
             </ul>
@@ -84,13 +84,13 @@ export default function DocumentsPage() {
 
         {/* Summary Preview */}
         {selectedDocument?.summary && (
-          <section className="rounded-2xl border border-white/10 bg-[#111827] p-6">
-            <div className="mb-5 flex items-center justify-between">
-              <div>
+          <section className="rounded-2xl border border-white/10 bg-[#111827] p-4 sm:p-6">
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div className="min-w-0">
                 <h2 className="text-lg font-semibold text-white">
                   Document Summary
                 </h2>
-                <p className="mt-1 text-sm text-gray-500">
+                <p className="mt-1 text-sm text-gray-500 [overflow-wrap:anywhere]">
                   {selectedDocument.name}
                 </p>
               </div>
@@ -98,13 +98,13 @@ export default function DocumentsPage() {
               <button
                 type="button"
                 onClick={() => setSelectedSummaryId(null)}
-                className="rounded-lg px-3 py-2 text-sm text-gray-400 hover:bg-white/5 hover:text-white"
+                className="shrink-0 rounded-lg px-3 py-2 text-sm text-gray-400 hover:bg-white/5 hover:text-white"
               >
                 Close
               </button>
             </div>
 
-            <p className="whitespace-pre-wrap text-sm leading-7 text-gray-400">
+            <p className="whitespace-pre-wrap text-sm leading-7 text-gray-400 [overflow-wrap:anywhere]">
               {selectedDocument.summary}
             </p>
           </section>

@@ -20,6 +20,21 @@ def test_vector_extension_is_installed():
     assert version is not None
 
 
+def test_no_server_side_prepared_statements_for_connection_poolers():
+    # psycopg prepares a query on the server after 5 runs by default; behind PgBouncer
+    # (Neon's pooled URL) that breaks. The engine turns it off.
+    with database.get_connection() as connection:
+        for _ in range(8):
+            connection.execute(text("SELECT count(*) FROM documents")).scalar_one()
+        prepared = connection.execute(
+            text("SELECT count(*) FROM pg_prepared_statements")
+        ).scalar_one()
+        threshold = connection.connection.driver_connection.prepare_threshold
+
+    assert threshold is None
+    assert prepared == 0
+
+
 def test_database_url_is_required(monkeypatch):
     monkeypatch.setattr(database, "DATABASE_URL", None)
 

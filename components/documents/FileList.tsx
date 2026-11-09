@@ -19,15 +19,15 @@ export default function FileList({
 }: FileListProps) {
   return (
     <section>
-      <div className="mb-5 flex items-center justify-between">
-        <div>
+      <div className="mb-5 flex items-center justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-lg font-semibold text-white">Your Documents</h2>
           <p className="mt-1 text-sm text-gray-500">
             Manage and track your uploaded files
           </p>
         </div>
 
-        <span className="rounded-full bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-400">
+        <span className="shrink-0 rounded-full bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-400">
           {documents.length} Files
         </span>
       </div>

@@ -15,7 +15,7 @@ export default function StatsCards({ data }: { data: DashboardData | null }) {
         {stats.map((stat) => {
           const Icon = stat.icon;
           return (
-            <div key={stat.label} className="rounded-2xl border border-white/10 bg-[#111827] p-5">
+            <div key={stat.label} className="rounded-2xl border border-white/10 bg-[#111827] p-4 sm:p-5">
               <div className="flex items-center justify-between">
                 <p className="text-sm text-gray-400">{stat.label}</p>
                 <div className={`rounded-xl p-2 ${stat.bg}`}><Icon size={20} className={stat.color} /></div>
@@ -25,7 +25,7 @@ export default function StatsCards({ data }: { data: DashboardData | null }) {
           );
         })}
       </section>
-      <div className="mb-8 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-white/10 bg-[#111827] px-5 py-3 text-sm">
+      <div className="mb-6 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-white/10 bg-[#111827] px-4 py-3 text-sm sm:mb-8 sm:px-5">
         <span className="text-gray-400">File types</span>
         {data && Object.keys(data.file_types).length === 0 && <span className="text-gray-500">No uploads yet</span>}
         {Object.entries(data?.file_types ?? {}).map(([type, count]) => (
