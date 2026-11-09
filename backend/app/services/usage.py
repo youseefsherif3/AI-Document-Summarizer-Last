@@ -66,6 +66,8 @@ def log_ai_usage(
     """
     prompt_tokens = _get(usage, "prompt_tokens")
     completion_tokens = _get(usage, "completion_tokens")
+    if prompt_tokens is not None and completion_tokens is None:
+        completion_tokens = 0  # embeddings have input tokens only
     cost = _get(usage, "cost")
 
     if cost is not None:
