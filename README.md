@@ -230,6 +230,8 @@ Backend project:
 | `BLOB_READ_WRITE_TOKEN` | the same Blob store, connected to this project too (secret) |
 | `CORS_ORIGINS` | the frontend's exact URL, for example `https://your-app.vercel.app`; comma-separate several (preview URLs are blocked unless listed) |
 | `OPENROUTER_MODEL` | optional, default `openai/gpt-4o` |
+| `RETRIEVAL_MODE` | optional, default `hybrid` (vector + full-text search); `vector` switches back |
+| `QUERY_REWRITE_ENABLED` | optional, default off. Leave it unset: rewriting of follow-up questions is not yet measured with the production model (see `docs/design.md`) |
 
 Never put `OPENROUTER_API_KEY` or `DATABASE_URL` in the frontend project. `TEST_DATABASE_URL`
 and the `EVAL_*` settings are for local development only.
@@ -238,8 +240,11 @@ and the `EVAL_*` settings are for local development only.
 
 There is no separate migration step: **on its first start the backend updates the database
 itself.** It enables the `vector` extension (available on every Neon plan), creates the
-`chunks` table with its HNSW index, and checks that stored vectors have 1,536 dimensions. The
-existing `documents` table is kept as it is. Before the first deploy, create a **Neon branch of
+`chunks` table with its HNSW index, and checks that stored vectors have 1,536 dimensions. It
+also adds the full-text search column (`content_tsv`, generated from each chunk's text) and its
+GIN index; Postgres fills it for every existing chunk when the column is added, so documents
+indexed before hybrid search are searchable by keyword without re-uploading. The existing
+`documents` table is kept as it is. Before the first deploy, create a **Neon branch of
 production as a backup**, and try the backend against that branch first. Filtering chat to
 selected documents needs pgvector 0.8 or newer (`SELECT extversion FROM pg_extension WHERE
 extname = 'vector';`).
