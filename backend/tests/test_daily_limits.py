@@ -250,13 +250,13 @@ def test_a_blob_upload_over_the_limit_deletes_the_temporary_blob(monkeypatch, su
 
     with TestClient(main.app) as client:
         response = client.post("/documents/upload/stream/blob", json={
-            "pathname": "documind/uploads/over-limit.txt", "filename": "over.txt",
+            "pathname": "documind/uploads/1/over-limit.txt", "filename": "over.txt",
             "file_size": len(content),
         })
 
     assert response.status_code == 429
     assert response.json()["code"] == "daily_limit"
-    assert deleted == ["documind/uploads/over-limit.txt"]
+    assert deleted == ["documind/uploads/1/over-limit.txt"]
     assert summaries == []
 
 

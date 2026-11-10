@@ -252,7 +252,7 @@ def blob_upload(client, content: bytes):
     response = client.post(
         "/documents/upload/stream/blob",
         json={
-            "pathname": "documind/uploads/file-random.txt",
+            "pathname": "documind/uploads/1/file-random.txt",
             "filename": "blob.txt",
             "file_size": len(content),
         },
@@ -270,7 +270,7 @@ def test_blob_upload_indexes_and_deletes_the_temporary_file(monkeypatch):
 
     assert events[-1]["type"] == "done"
     assert rows("SELECT content FROM chunks") == [{"content": "Blob document content."}]
-    assert deleted == ["documind/uploads/file-random.txt"]
+    assert deleted == ["documind/uploads/1/file-random.txt"]
 
 
 def test_blob_embedding_failure_still_deletes_the_temporary_file(monkeypatch):
@@ -288,4 +288,4 @@ def test_blob_embedding_failure_still_deletes_the_temporary_file(monkeypatch):
 
     assert events[-1]["status"] == 504
     assert saved_counts() == (0, 0)
-    assert deleted == ["documind/uploads/file-random.txt"]
+    assert deleted == ["documind/uploads/1/file-random.txt"]

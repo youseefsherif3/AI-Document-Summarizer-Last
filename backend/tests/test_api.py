@@ -166,7 +166,7 @@ def test_blob_stream_saves_summary_and_deletes_temporary_upload(monkeypatch):
         response = client.post(
             "/documents/upload/stream/blob",
             json={
-                "pathname": "documind/uploads/file-random.txt",
+                "pathname": "documind/uploads/1/file-random.txt",
                 "filename": "blob.txt",
                 "file_size": len(b"Blob document content."),
             },
@@ -176,7 +176,7 @@ def test_blob_stream_saves_summary_and_deletes_temporary_upload(monkeypatch):
     assert response.status_code == 200
     assert '"type": "done"' in response.text
     assert documents[0]["summary"] == "A blob summary."
-    assert deleted == ["documind/uploads/file-random.txt"]
+    assert deleted == ["documind/uploads/1/file-random.txt"]
 
 
 def test_failed_temporary_upload_delete_is_logged_and_upload_still_succeeds(monkeypatch, caplog):
@@ -204,7 +204,7 @@ def test_failed_temporary_upload_delete_is_logged_and_upload_still_succeeds(monk
         response = client.post(
             "/documents/upload/stream/blob",
             json={
-                "pathname": "documind/uploads/keep-random.txt",
+                "pathname": "documind/uploads/1/keep-random.txt",
                 "filename": "blob.txt",
                 "file_size": len(content),
             },
@@ -215,12 +215,12 @@ def test_failed_temporary_upload_delete_is_logged_and_upload_still_succeeds(monk
     assert '"type": "done"' in response.text
     assert documents[0]["summary"] == "A blob summary."
     [record] = [r for r in caplog.records if "Could not delete temporary upload" in r.getMessage()]
-    assert "documind/uploads/keep-random.txt" in record.getMessage()
+    assert "documind/uploads/1/keep-random.txt" in record.getMessage()
     assert "Blob storage is unavailable" in caplog.text  # the error itself is logged too
 
 
 def test_cancelled_blob_stream_deletes_temporary_upload_without_persisting(monkeypatch):
-    pathname = "documind/uploads/cancel-random.txt"
+    pathname = "documind/uploads/1/cancel-random.txt"
     deleted = []
 
     async def mock_head(_pathname):

@@ -13,6 +13,7 @@ import {
 import type { UploadedDocument, DocumentType } from "@/types/document";
 import { upload as uploadBlob } from "@vercel/blob/client";
 import { apiUrl } from "@/lib/api";
+import { userUploadPrefix } from "@/lib/upload-paths";
 
 import {
   ALLOWED_EXTENSIONS,
@@ -143,8 +144,16 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
 
       if (useVercelBlob) {
         const extension = document.name.split(".").pop()?.toLowerCase();
+        // Uploads go to the signed-in user's own Blob folder; the token route and the
+        // backend refuse any other path.
+        const me = await fetch(apiUrl("/auth/me"), {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!me.ok) throw new Error("Please sign in again to upload.");
+        const { id: userId } = (await me.json()) as { id: number };
         const blob = await uploadBlob(
-          `documind/uploads/${document.id}.${extension}`,
+          `${userUploadPrefix(userId)}${document.id}.${extension}`,
           document.file,
           {
             access: "private",

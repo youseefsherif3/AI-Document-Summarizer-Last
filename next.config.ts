@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+import { backendUrl } from "./lib/backend-url";
+
 const nextConfig: NextConfig = {
   /* config options here */
   distDir: process.env.NEXT_BUILD_DIR || ".next",
@@ -10,12 +12,9 @@ const nextConfig: NextConfig = {
   // (BACKEND_URL, read at build time), so the backend's session cookie is first-party.
   // A plain array means "afterFiles": routes under app/api/ (document-uploads) win first.
   async rewrites() {
-    if (!process.env.BACKEND_URL && process.env.VERCEL) {
-      // Fail the deployment instead of silently forwarding /api to localhost.
-      throw new Error("BACKEND_URL is not set for this Vercel environment.");
-    }
-    const backend = (process.env.BACKEND_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
-    return [{ source: "/api/:path*", destination: `${backend}/:path*` }];
+    // backendUrl() fails the deployment if BACKEND_URL is missing on Vercel, instead of
+    // silently forwarding /api to localhost.
+    return [{ source: "/api/:path*", destination: `${backendUrl()}/:path*` }];
   },
   cacheComponents: true,
   partialPrefetching: true,

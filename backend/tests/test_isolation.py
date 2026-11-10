@@ -270,13 +270,56 @@ def test_blob_uploads_belong_to_the_uploader(users, monkeypatch):
     monkeypatch.setattr(main, "stream_summary", summary)
 
     response = b.request("POST", "/documents/upload/stream/blob", json={
-        "pathname": "documind/uploads/b-random.txt", "filename": "b-blob.txt",
+        "pathname": f"documind/uploads/{b.user_id}/b-random.txt", "filename": "b-blob.txt",
         "file_size": len(content),
     })
 
     assert response.status_code == 200
     assert b.documents() == ["b-blob.txt"]
     assert a.documents() == []
+
+
+def test_a_user_cannot_ingest_or_delete_a_blob_in_another_users_folder(users, monkeypatch):
+    a, b = users
+    touched = []
+
+    async def head(pathname):
+        touched.append(("head", pathname))
+        return SimpleNamespace(size=5)
+
+    async def get(pathname, *, access):
+        touched.append(("get", pathname))
+        return SimpleNamespace(body=b"text.")
+
+    async def delete(pathname):
+        touched.append(("delete", pathname))
+
+    async def summary(text):
+        pytest.fail("No blob outside the user's folder may be summarized.")
+        yield ""
+
+    monkeypatch.setattr(main.blob, "head_blob", head)
+    monkeypatch.setattr(main.blob, "get_blob", get)
+    monkeypatch.setattr(main.blob, "delete_blob", delete)
+    monkeypatch.setattr(main, "stream_summary", summary)
+
+    for pathname in (
+        f"documind/uploads/{b.user_id}/b-upload.txt",               # B's folder
+        "documind/uploads/b-upload.txt",                            # the old, shared folder
+        f"documind/uploads/{a.user_id}{a.user_id}/x.txt",           # a look-alike folder
+        f"documind/uploads/{a.user_id}/../{b.user_id}/b-upload.txt",  # path traversal
+        f"documind/uploads/{a.user_id}/sub/x.txt",                  # a subfolder
+    ):
+        response = a.request("POST", "/documents/upload/stream/blob", json={
+            "pathname": pathname, "filename": "x.txt", "file_size": 5,
+        })
+        assert response.status_code == 400, pathname
+        assert response.json() == {"detail": "Invalid upload reference."}
+
+    # Refused before anything happened: no blob read or deleted, nothing saved or counted.
+    assert touched == []
+    assert a.documents() == [] and b.documents() == []
+    assert sql("SELECT count(*) FROM daily_usage").scalar_one() == 0
 
 
 # --- Chat ---------------------------------------------------------------------------------

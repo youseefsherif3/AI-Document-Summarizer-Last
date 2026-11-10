@@ -95,6 +95,11 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 BLOB_UPLOAD_PREFIX = "documind/uploads/"
 
 
+def user_upload_prefix(user_id: int) -> str:
+    """The Blob folder for one user's temporary uploads (see app/api/document-uploads)."""
+    return f"{BLOB_UPLOAD_PREFIX}{user_id}/"
+
+
 class BlobSummaryRequest(BaseModel):
     pathname: str = Field(min_length=1, max_length=950)
     filename: str = Field(min_length=1, max_length=255)
@@ -324,8 +329,11 @@ async def upload_document_stream_from_blob(
     upload: BlobSummaryRequest, user: User = Depends(current_user)
 ):
     """Read a private Vercel Blob upload, then stream and persist its summary."""
+    # Each user's uploads live under documind/uploads/{user_id}/ (the upload-token route only
+    # issues such paths). Anything else, including another user's folder, is refused before
+    # the blob is read or deleted.
     if not re.fullmatch(
-        rf"{re.escape(BLOB_UPLOAD_PREFIX)}[A-Za-z0-9._-]+\.(pdf|docx|txt)",
+        rf"{re.escape(user_upload_prefix(user.id))}[A-Za-z0-9._-]+\.(pdf|docx|txt)",
         upload.pathname,
         flags=re.IGNORECASE,
     ):
