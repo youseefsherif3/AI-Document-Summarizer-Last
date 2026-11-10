@@ -116,7 +116,7 @@ Per-user data isolation, job ownership and per-user usage all depend on authenti
 - **Login rate limiting:** limit failed attempts per email and per client IP (for example 5 per 15 minutes, then a temporary block), and return `429` with `Retry-After`. Step 2 comes before Redis (Step 3), so the first version stores attempts in Postgres; it can move to Redis later.
 - **One generic error** for a wrong email or a wrong password ("Email or password is incorrect"), with the same status and similar timing (when the email doesn't exist, the password is still checked against a dummy hash), so the response doesn't reveal which accounts exist. Registration doesn't reveal existing emails either, beyond what is unavoidable.
 - **No passwords or tokens in logs**, traces or error messages: request bodies of auth endpoints are never logged, and session tokens are never logged in full.
-- **Session in an `httpOnly`, `Secure` cookie.** The cookie holds an opaque random session token; the database stores only its hash, with the user, expiry and last use, so logout and revocation work (`sessions` table). The token is never readable by JavaScript and never stored in `localStorage`.
+- **Session in an `httpOnly`, `Secure` cookie.** The cookie holds an opaque random session token; the database stores only its hash, with the user, expiry and last use, so logout and revocation work (`sessions` table). The token is never readable by JavaScript and never stored in `localStorage`. **Decided:** sessions slide, lasting 14 days (`SESSION_DAYS`) from the last visit.
 - **CSRF:** with cookie sessions, every state-changing request is protected (`SameSite` cookie plus an `Origin` check against the allowed origins, or a CSRF token where `SameSite=None` is unavoidable).
 - FastAPI reads the cookie on every request and derives `user_id` from the session; a `user_id` sent by the frontend is never trusted.
 
@@ -149,7 +149,7 @@ Conclusions: chat keeps streaming token by token through the rewrite, so the fal
 
 **Known gap: password reset by email is out of scope for now.** There is no email sending, so a forgotten password cannot be reset by the user; an admin resets it manually (a documented command) until reset by email is added. Email verification on sign-up is out of scope for the same reason.
 
-**Existing data:** documents uploaded before auth have no owner. Decide in Step 2: delete them, or assign them to one account. (Production currently holds only test documents.)
+**Existing data (decided):** documents uploaded before auth have no owner and are visible to nobody. After registering, the user assigns them to their account with a one-off command run by hand: `python -m app.claim_documents --email … --dry-run`, then without `--dry-run`. Registration never assigns documents.
 
 ### 4.2 Production hosting for Redis and the worker (decided)
 
@@ -368,11 +368,11 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 
 | Step | Work |
 |---|---|
-| **0. Preparation** | No user-visible behavior change. (a) One shared OpenRouter error wrapper in `services/` replaces the four copies of the mapping, and keeps `Retry-After` for every 429 (summary and embeddings too). (b) Turn off the SDK's silent retries (`max_retries=0`) on the shared client, so later app-level retries are the only retries and are counted. (c) Stop the two swallowed errors: `_delete_temporary_blob` logs a failed delete; `app/api/document-uploads/route.ts` logs the error before returning 400. (d) Fix the lint error in `app/page.tsx` and the unused import in `FileCard.tsx`, so `npm run lint` passes (needed for CI). (e) Update README (66 questions, hybrid chat, all optional settings), CLAUDE.md (where OpenRouter is called, known issues) and `backend/.env.example` (`OPENROUTER_CHAT_MODEL`, `RETRIEVAL_MIN_SIMILARITY`). Tests: existing suite passes; new tests for the wrapper (each error type, `Retry-After` kept, client built with `max_retries=0`) and for the logged blob-delete failure. |
+| **0. Preparation** | **Done** (merged into `main`). No user-visible behavior change. (a) One shared OpenRouter error wrapper in `services/` replaces the four copies of the mapping, and keeps `Retry-After` for every 429 (summary and embeddings too). (b) Turn off the SDK's silent retries (`max_retries=0`) on the shared client, so later app-level retries are the only retries and are counted. (c) Stop the two swallowed errors: `_delete_temporary_blob` logs a failed delete; `app/api/document-uploads/route.ts` logs the error before returning 400. (d) Fix the lint error in `app/page.tsx` and the unused import in `FileCard.tsx`, so `npm run lint` passes (needed for CI). (e) Update README (66 questions, hybrid chat, all optional settings), CLAUDE.md (where OpenRouter is called, known issues) and `backend/.env.example` (`OPENROUTER_CHAT_MODEL`, `RETRIEVAL_MIN_SIMILARITY`). Tests: existing suite passes; new tests for the wrapper (each error type, `Retry-After` kept, client built with `max_retries=0`) and for the logged blob-delete failure. |
 | **1. Architecture audit** | **Done** (revision 3 of this plan). Reviewed the code, CLAUDE.md and docs/design.md; §2 corrected; risks listed in §13. No code changes. |
-| **2. Auth, migrations and ownership** | First choose the cross-domain cookie option (§4.1, A or B) and approve the hashing dependency. Add email + password auth per §4.1: `users` and `sessions` tables, register / login / logout / me endpoints, login rate limiting, generic login error, CSRF protection, no secrets in logs, login and sign-up pages. Tests: hashing, generic error, rate limit, cookie flags, logout revokes the session, no password or token in captured logs. Add Alembic and a baseline migration. Add `owner_user_id` and `content_hash`; scope every existing endpoint and search query to the user. Handle existing data. Tests that one user cannot read, search or delete another user's data. |
+| **2. Auth, migrations and ownership** | **Implemented on `phase3/step-2`, not merged yet:** the production migration comes first (see "Step 2 as built" below). `content_hash` moved to Step 4. First choose the cross-domain cookie option (§4.1, A or B) and approve the hashing dependency. Add email + password auth per §4.1: `users` and `sessions` tables, register / login / logout / me endpoints, login rate limiting, generic login error, CSRF protection, no secrets in logs, login and sign-up pages. Tests: hashing, generic error, rate limit, cookie flags, logout revokes the session, no password or token in captured logs. Add Alembic and a baseline migration. Add `owner_user_id` and `content_hash`; scope every existing endpoint and search query to the user. Handle existing data. Tests that one user cannot read, search or delete another user's data. |
 | **3. Redis + Celery locally** | Redis and a worker in Docker Compose; a first trivial task; job table and states; `GET /jobs/{id}`. |
-| **4. Queue-based ingestion** | Move the full ingestion pipeline into the worker; `202` upload; frontend progress via polling; retries; idempotency by content hash; concurrent-upload limit and duplicate check enforced in the backend. |
+| **4. Queue-based ingestion** | Add `documents.content_hash` (moved here from Step 2) with a unique (owner, hash) constraint. Move the full ingestion pipeline into the worker; `202` upload; frontend progress via polling; retries; idempotency by content hash; concurrent-upload limit and duplicate check enforced in the backend. |
 | **4b. Backfill** | Backfill script for documents without chunks (§6.1b): estimate first, idempotent, Neon branch first. |
 | **5. LLM production layer** | Persist per-request usage; app-level 429 handling with backoff and jitter; fallback models; circuit breaker; graceful degradation; latency measurement. |
 | **6. Caching and database review** | Redis caches from §6.2 with TTL and invalidation; measure hits and impact; review indexes and connection pooling. |
@@ -381,6 +381,21 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | **9. Production deployment** | Hosting is decided (§4.2). With the Azure details from §4.2: create Azure Managed Redis and the worker Container App (image in ACR, KEDA scaling); configure secrets; point the Vercel API at Redis; run migrations on a Neon branch, then production; run the backfill; smoke test. |
 | **10. Load testing and sign-off** | Fake LLM mode; Locust scenarios; measure, fix bottlenecks, rerun; one approved small real-model run; document results. |
 | **11. (Optional) My AI Analytics** | Per-user dashboard from §7 on real data. |
+
+### Step 2 as built (branch `phase3/step-2`)
+
+| Area | What was built |
+|---|---|
+| Cookies | Option A: the browser calls only the frontend's `/api/*`, rewritten to `BACKEND_URL`. A Vercel build without `BACKEND_URL` fails. |
+| Migrations | Alembic. `0001_baseline` matches the old startup schema exactly (checked against a frozen copy of the old code and a saved snapshot); `0002_auth_tables`; `0003_document_owner`. The app only checks the revision at startup. `python -m app.schema_check` verifies a database before it is stamped. |
+| Accounts | Email + password, Argon2id; `httpOnly` `Secure` `SameSite=Lax` cookie, 14-day sliding sessions, only the token's hash stored, ended sessions deleted after a day; login limits (5 per email, 20 per IP in 15 minutes) and 5 registrations per IP per day; one generic login error; CSRF check on every POST/DELETE; no passwords, tokens or full emails in logs. |
+| Ownership | `documents.owner_user_id`; every query (lists, dashboard, delete, uploads, both chat searches, the chat document check) takes the owner; another user's document is a 404. Existing documents are claimed with `app.claim_documents`. |
+| Daily limits | 20 uploads and 100 chat questions per user per UTC day, counted atomically before any AI call; 429 with a clear message. |
+| Blob | Upload tokens only for `documind/uploads/{user_id}/…`; the backend refuses blobs outside the user's folder. |
+| Frontend | `/login`, `/register`, sign-out in the header (email in the header from 1024 px, in the sidebar below), `proxy.ts` redirects, a 401 sends the user to sign in without loops, `?next=` limited to same-site paths. |
+| Also | Provider 402 (out of credit) → 503 with a clear message, logged, never retried. |
+| Checks | Backend tests (isolation tests read every route from the OpenAPI schema), tsc, lint, build; browser checks against the test database at 320–1280 px; retrieval eval before and after identical (`20261110-180003-step2-before-main`, `20261110-180015-step2-after-owner-scoping`). |
+| Not yet | Production: Neon branch rehearsal with preview deployments, then production migration, deploy, and `claim_documents`. The upload and chat checks in production wait until the OpenRouter account has credit again (it currently returns 402). |
 
 ---
 
@@ -403,7 +418,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [ ] Load-test results (fake LLM mode) are documented with real measurements, bottlenecks and improvements.
 - [ ] The Phase 2 eval suite still passes at or above its baseline.
 - [ ] Every document in production has chunks (backfill run), and chat can find documents uploaded before Phase 2.
-- [ ] The app makes no hidden retries: SDK retries are off, and every retry is the app's own and is counted.
+- [x] The app makes no hidden retries: SDK retries are off, and every retry is the app's own and is counted. (Step 0)
 - [ ] (Optional) My AI Analytics shows real data for the authenticated user only, with empty, loading and error states.
 
 ---
@@ -428,7 +443,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 ### Decisions
 - [x] Authentication approach chosen (§4.1): own email + password, `httpOnly` `Secure` cookie session.
 - [x] Cross-domain cookie option chosen (§4.1): A, the `/api` rewrite, confirmed by the spike.
-- [ ] Handling of existing documents without an owner decided.
+- [x] Handling of existing documents without an owner decided: the `claim_documents` command, run by hand after registering.
 - [x] Upload experience without live summary streaming accepted (§4.3); chat streaming unchanged.
 - [x] Production hosting for Redis and the worker chosen (§4.2): Azure Container Apps + Azure Managed Redis.
 - [ ] Azure details provided (§4.2 list).

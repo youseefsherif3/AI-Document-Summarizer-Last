@@ -51,8 +51,11 @@ regenerate `questions.md`.
 ## Running the evals
 
 The runner needs the Docker database and `OPENROUTER_API_KEY`. It indexes the corpus into a
-separate `*_eval` database (created if missing, emptied on every run), never the dev or test
-database. It always prints a cost estimate first and asks before running.
+separate `*_eval` database (created if missing, rebuilt from the Alembic migrations on every
+run), never the dev or test database. The corpus belongs to one eval account
+(`eval-runner@documind.invalid`), and retrieval searches only that account's documents, the
+same way the app scopes every search to the signed-in user. It always prints a cost estimate
+first and asks before running.
 
 See the estimate only (no AI calls, nothing written):
 
