@@ -77,6 +77,23 @@ def fake_embeddings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def retry_waits(monkeypatch):
+    """AI call retries (services/ai_calls.py) don't really wait in tests.
+
+    Returns the list of waits, in seconds, that would have happened.
+    """
+    import app.services.ai_calls as ai_calls
+
+    waits = []
+
+    async def no_wait(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(ai_calls, "_sleep", no_wait)
+    return waits
+
+
+@pytest.fixture(autouse=True)
 def query_rewrite_off(monkeypatch):
     """Query rewriting calls a model, so it is off unless a test turns it on (with a fake)."""
     monkeypatch.delenv("QUERY_REWRITE_ENABLED", raising=False)

@@ -5,9 +5,7 @@ import logging
 import os
 import time
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
-
-from .summarizer import AIRateLimitError, AIServiceError, _get_async_client
+from .ai_calls import AIServiceError, _get_async_client, call_with_retries
 from .usage import log_ai_usage
 
 logger = logging.getLogger(__name__)
@@ -44,8 +42,12 @@ async def _embed_batch(batch: list[str]) -> list[list[float]]:
     usage = None
     outcome = "error"
     try:
-        response = await client.embeddings.create(
-            model=EMBEDDING_MODEL, input=batch, encoding_format="float"
+        response = await call_with_retries(
+            lambda: client.embeddings.create(
+                model=EMBEDDING_MODEL, input=batch, encoding_format="float"
+            ),
+            kind="embedding",
+            model=EMBEDDING_MODEL,
         )
         usage = getattr(response, "usage", None)
         data = sorted(response.data or [], key=lambda item: item.index)
@@ -68,18 +70,6 @@ async def _embed_batch(batch: list[str]) -> list[list[float]]:
     except AIServiceError as error:
         logger.error("Embedding request failed: %s", error)
         raise
-    except APITimeoutError as error:
-        raise TimeoutError("The AI service took too long to respond.") from error
-    except APIConnectionError as error:
-        raise ConnectionError("Could not connect to the AI service.") from error
-    except RateLimitError as error:
-        raise AIRateLimitError(
-            "The AI service rate limit has been exceeded. Please try again later."
-        ) from error
-    except APIStatusError as error:
-        raise AIServiceError(
-            f"The AI service returned an API error: {error.status_code}"
-        ) from error
     finally:
         log_ai_usage(
             kind="embedding",

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+import app.services.ai_calls as ai_calls
 from app.main import app
 import app.main as main
 import app.services.summarizer as summarizer
@@ -262,10 +263,10 @@ def missing_api_key(monkeypatch):
         raise AssertionError("An AI client must not be created without an API key.")
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setattr(summarizer, "AsyncOpenAI", fail_if_client_created)
-    summarizer._get_async_client.cache_clear()
+    monkeypatch.setattr(ai_calls, "AsyncOpenAI", fail_if_client_created)
+    ai_calls._get_async_client.cache_clear()
     yield
-    summarizer._get_async_client.cache_clear()
+    ai_calls._get_async_client.cache_clear()
 
 
 def test_stream_upload_returns_503_when_ai_not_configured(missing_api_key, caplog):

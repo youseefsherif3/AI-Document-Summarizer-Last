@@ -3,86 +3,23 @@ import asyncio
 import logging
 import os
 import time
-from functools import cache
-from pathlib import Path
+from contextlib import aclosing
 
-from dotenv import load_dotenv
-from openai import (
-    AsyncOpenAI,
-    APITimeoutError,
-    APIConnectionError,
-    RateLimitError,
-    APIStatusError,
+from .ai_calls import (  # noqa: F401  (re-exported: the app imports the errors from here)
+    OPENROUTER_BASE_URL,
+    AIRateLimitError,
+    AIServiceError,
+    AIServiceNotConfiguredError,
+    _get_async_client,
+    _require_api_key,
+    rate_limit_error,
+    stream_with_retries,
 )
-
 from .usage import log_ai_usage
-
-# backend/.env, wherever the process was started from.
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
-
-
-class AIRateLimitError(Exception):
-    """Raised when the AI provider rate limit is exceeded.
-
-    `retry_after` is the provider's suggested wait in seconds, if it sent one; `detail` is
-    the provider's own message (for example, which limit was hit).
-    """
-
-    def __init__(self, message: str, *, retry_after: float | None = None, detail: str = ""):
-        super().__init__(message)
-        self.retry_after = retry_after
-        self.detail = detail
-
-
-def rate_limit_error(error: RateLimitError) -> AIRateLimitError:
-    """Map OpenRouter's 429 to AIRateLimitError, keeping the suggested wait and its message."""
-    headers = error.response.headers if error.response is not None else {}
-    retry_after = None
-    try:
-        if headers.get("retry-after"):
-            retry_after = float(headers["retry-after"])
-        elif headers.get("x-ratelimit-reset"):
-            # Epoch milliseconds when the limit resets.
-            retry_after = max(0.0, float(headers["x-ratelimit-reset"]) / 1000 - time.time())
-    except ValueError:
-        retry_after = None
-    return AIRateLimitError(
-        "The AI service rate limit has been exceeded. Please try again later.",
-        retry_after=retry_after,
-        detail=str(error),
-    )
-
-
-class AIServiceError(Exception):
-    """Raised when the AI provider returns an API error."""
-
-
-class AIServiceNotConfiguredError(Exception):
-    """Raised when OPENROUTER_API_KEY is not set."""
-
-
-def _require_api_key() -> str:
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not api_key:
-        logger.error("OPENROUTER_API_KEY is not set; cannot call the AI service.")
-        raise AIServiceNotConfiguredError("AI service is not configured.")
-    return api_key
-
-
-# The client is created on first use so importing this module (e.g. in tests)
-# does not require OPENROUTER_API_KEY. A failed key check is not cached.
-@cache
-def _get_async_client() -> AsyncOpenAI:
-    return AsyncOpenAI(
-        base_url=OPENROUTER_BASE_URL,
-        api_key=_require_api_key(),
-        timeout=60.0,
-    )
 
 
 async def stream_summary(text: str):
@@ -98,52 +35,40 @@ async def stream_summary(text: str):
     model = MODEL
     outcome = "error"
 
-    try:
-        stream = await client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a professional document summarizer. "
-                        "Summarize the provided document clearly and accurately. "
-                        "Preserve its key ideas, important details, and conclusions. "
-                        "Do not add information that is not present in the document. "
-                        "Use the same language as the original document."
-                    ),
-                },
-                {"role": "user", "content": f"Summarize this document:\n\n{text}"},
-            ],
-            max_tokens=1000,
-            stream=True,
-        )
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a professional document summarizer. "
+                "Summarize the provided document clearly and accurately. "
+                "Preserve its key ideas, important details, and conclusions. "
+                "Do not add information that is not present in the document. "
+                "Use the same language as the original document."
+            ),
+        },
+        {"role": "user", "content": f"Summarize this document:\n\n{text}"},
+    ]
 
-        try:
-            async for chunk in stream:
+    try:
+        chunks = stream_with_retries(
+            lambda: client.chat.completions.create(
+                model=MODEL, messages=messages, max_tokens=1000, stream=True
+            ),
+            kind="summary",
+            model=MODEL,
+        )
+        async with aclosing(chunks):
+            async for chunk in chunks:
                 if getattr(chunk, "usage", None) is not None:
                     usage = chunk.usage
                 model = getattr(chunk, "model", None) or model
                 content = chunk.choices[0].delta.content if chunk.choices else None
                 if isinstance(content, str) and content:
                     yield content
-            outcome = "ok"
-        finally:
-            await stream.close()
+        outcome = "ok"
     except (GeneratorExit, asyncio.CancelledError):
         outcome = "cancelled"
         raise
-    except APITimeoutError as error:
-        raise TimeoutError("The AI service took too long to respond.") from error
-    except APIConnectionError as error:
-        raise ConnectionError("Could not connect to the AI service.") from error
-    except RateLimitError as error:
-        raise AIRateLimitError(
-            "The AI service rate limit has been exceeded. Please try again later."
-        ) from error
-    except APIStatusError as error:
-        raise AIServiceError(
-            f"The AI service returned an API error: {error.status_code}"
-        ) from error
     finally:
         log_ai_usage(
             kind="summary", model=model, usage=usage, started_at=started_at, outcome=outcome

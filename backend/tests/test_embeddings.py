@@ -6,6 +6,7 @@ import httpx
 import pytest
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
+import app.services.ai_calls as ai_calls
 import app.services.embeddings as embeddings
 import app.services.summarizer as summarizer
 from app.services.summarizer import AIRateLimitError, AIServiceError, AIServiceNotConfiguredError
@@ -170,10 +171,10 @@ def test_missing_api_key_gives_not_configured_error(monkeypatch):
         raise AssertionError("An AI client must not be created without an API key.")
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setattr(summarizer, "AsyncOpenAI", fail_if_client_created)
-    summarizer._get_async_client.cache_clear()
+    monkeypatch.setattr(ai_calls, "AsyncOpenAI", fail_if_client_created)
+    ai_calls._get_async_client.cache_clear()
     try:
         with pytest.raises(AIServiceNotConfiguredError):
             asyncio.run(embeddings.embed_texts(["text 1"]))
     finally:
-        summarizer._get_async_client.cache_clear()
+        ai_calls._get_async_client.cache_clear()

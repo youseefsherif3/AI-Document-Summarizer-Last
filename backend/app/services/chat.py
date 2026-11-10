@@ -7,17 +7,17 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Sequence
+from contextlib import aclosing
 
 from fastapi.concurrency import run_in_threadpool
-from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
 from app.database import ChunkMatch, search_chunks
 
 from . import summarizer
+from .ai_calls import AIRateLimitError, AIServiceError, _get_async_client, stream_with_retries
 from .embeddings import embed_query
 from .query_rewrite import query_rewrite_enabled, query_rewrite_model, rewrite_question
 from .retrieval import hybrid_search, retrieval_mode
-from .summarizer import AIRateLimitError, AIServiceError, _get_async_client, rate_limit_error
 from .usage import log_ai_usage
 
 logger = logging.getLogger(__name__)
@@ -237,36 +237,28 @@ async def stream_answer(
     usage = None
     outcome = "error"
     try:
-        stream = await client.chat.completions.create(
+        chunks = stream_with_retries(
+            lambda: client.chat.completions.create(
+                model=model,
+                messages=prepared.messages,
+                max_tokens=ANSWER_MAX_TOKENS,
+                temperature=0,
+                stream=True,
+            ),
+            kind="chat",
             model=model,
-            messages=prepared.messages,
-            max_tokens=ANSWER_MAX_TOKENS,
-            temperature=0,
-            stream=True,
         )
-        try:
-            async for chunk in stream:
+        async with aclosing(chunks):
+            async for chunk in chunks:
                 if getattr(chunk, "usage", None) is not None:
                     usage = chunk.usage
                 content = chunk.choices[0].delta.content if chunk.choices else None
                 if isinstance(content, str) and content:
                     yield content
-            outcome = "ok"
-        finally:
-            await stream.close()
+        outcome = "ok"
     except (GeneratorExit, asyncio.CancelledError):
         outcome = "cancelled"
         raise
-    except APITimeoutError as error:
-        raise TimeoutError("The AI service took too long to respond.") from error
-    except APIConnectionError as error:
-        raise ConnectionError("Could not connect to the AI service.") from error
-    except RateLimitError as error:
-        raise rate_limit_error(error) from error
-    except APIStatusError as error:
-        raise AIServiceError(
-            f"The AI service returned an API error: {error.status_code}"
-        ) from error
     finally:
         prepared.usage = log_ai_usage(
             kind="chat", model=model, usage=usage, started_at=started_at, outcome=outcome
