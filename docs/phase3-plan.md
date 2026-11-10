@@ -4,7 +4,7 @@
 **Document purpose:** Scope definition and implementation plan for review
 **Project:** DocuMind — AI Document Summarizer & Chat with your Docs (RAG)
 **Date:** November 2026
-**Revision:** 3 (updated after the Step 1 architecture audit of `main` at `fa292bf`)
+**Revision:** 4 (Step 1 audit of `main` at `fa292bf`; chat streaming rule and authentication decided)
 
 > **Important:** This document describes the agreed target implementation. It does not mean that the listed components have already been implemented.
 
@@ -72,7 +72,7 @@ Phase 3 builds on a working, deployed application. The following already exists 
 | Backend API | FastAPI (Python) on Vercel (unchanged) |
 | Database | PostgreSQL + pgvector: Docker locally, Neon in production (unchanged) |
 | Migrations | **Alembic** (new) |
-| Authentication | **To be chosen in Step 2** (see §4.1) |
+| Authentication | **Decided:** own email + password (Argon2id or bcrypt), session in an `httpOnly` `Secure` cookie, no external provider (see §4.1). The cross-domain cookie approach is chosen at the start of Step 2. |
 | Queue / background jobs | Redis + Celery |
 | Cache | Redis, logically separate from the queue (separate key prefixes or DB numbers) |
 | Worker + Redis hosting (production) | **Decided:** Celery worker on **Azure Container Apps**, Redis on **Azure Managed Redis** (see §4.2). Frontend, API, Neon and Vercel Blob stay as they are. |
@@ -91,7 +91,7 @@ Phase 3 builds on a working, deployed application. The following already exists 
   Step 0 (§9) is preparation that Phase 3 requires; it changes no user-visible behavior.
 - **Upload limit:** a user can have at most **3 files uploading at the same time**. Stored documents are unlimited. Do not reintroduce a limit on stored documents.
 - Do not replace Neon, PostgreSQL, pgvector, Next.js or FastAPI, or rewrite working parts of the application, without a clear technical reason.
-- **Chat stays synchronous.** `POST /chat/stream` keeps streaming over SSE; it is not moved into the queue.
+- **Chat streaming stays exactly as it is.** `POST /chat/stream` keeps streaming the answer token by token over SSE (`sources` → `delta`… → `done` / `error`), directly from the API, and **never goes through the queue or the worker**. Phase 3 may add things around it (owner scoping of the search, auth, usage records, retries before the first token, caching of the question embedding or retrieval results), but not change how the answer streams. **Only upload processing moves to the worker.** During upload the summary is shown when the job completes; streaming it from the worker is a possible later step (§4.3).
 - Keep the Phase 2 rule: a document is saved only with its chunks, never half-indexed.
 - Do not repeat Azure fundamentals or force a migration of the whole project to Azure.
 - Kubernetes basics are part of the learning scope; running DocuMind on Kubernetes is not required.
@@ -104,17 +104,34 @@ Phase 3 builds on a working, deployed application. The following already exists 
 
 ## 4. Decisions Required Before Implementation
 
-### 4.1 Authentication (decide in Step 2)
+### 4.1 Authentication (decided: own email + password)
 
 Per-user data isolation, job ownership and per-user usage all depend on authentication, so it must exist before them.
 
-| Option | Pros | Cons |
-|---|---|---|
-| **Auth.js (NextAuth)** with a GitHub/Google provider, JWT verified by FastAPI | Free, common with Next.js, no extra service | Some setup to share and verify the token in FastAPI |
-| **Clerk** | Fast setup, hosted UI, simple JWT verification | External dependency; free tier limits |
-| Own email + password with JWT | Full control | Most work; password storage and reset are easy to get wrong |
+**Decision:** our own email + password accounts in FastAPI and Postgres. **No external provider** (no Auth.js providers, Clerk, Google or GitHub sign-in).
 
-Whichever is chosen, FastAPI verifies the token on every request and derives `user_id` from it.
+**Rules:**
+
+- **Password hashing:** Argon2id (preferred, `argon2-cffi`) or bcrypt. Never stored or compared in plain text. The hashing library is a new dependency and is approved in Step 2 before it is added.
+- **Login rate limiting:** limit failed attempts per email and per client IP (for example 5 per 15 minutes, then a temporary block), and return `429` with `Retry-After`. Step 2 comes before Redis (Step 3), so the first version stores attempts in Postgres; it can move to Redis later.
+- **One generic error** for a wrong email or a wrong password ("Email or password is incorrect"), with the same status and similar timing (when the email doesn't exist, the password is still checked against a dummy hash), so the response doesn't reveal which accounts exist. Registration doesn't reveal existing emails either, beyond what is unavoidable.
+- **No passwords or tokens in logs**, traces or error messages: request bodies of auth endpoints are never logged, and session tokens are never logged in full.
+- **Session in an `httpOnly`, `Secure` cookie.** The cookie holds an opaque random session token; the database stores only its hash, with the user, expiry and last use, so logout and revocation work (`sessions` table). The token is never readable by JavaScript and never stored in `localStorage`.
+- **CSRF:** with cookie sessions, every state-changing request is protected (`SameSite` cookie plus an `Origin` check against the allowed origins, or a CSRF token where `SameSite=None` is unavoidable).
+- FastAPI reads the cookie on every request and derives `user_id` from the session; a `user_id` sent by the frontend is never trusted.
+
+**Cross-domain cookie problem.** The frontend and the backend are separate Vercel projects on different `*.vercel.app` domains. `vercel.app` is on the Public Suffix List, so the two are **different sites**: a cookie set by the backend is a third-party cookie from the frontend's point of view, and it cannot be shared through a parent domain. Options, to be chosen at the start of Step 2:
+
+| Option | How | Pros | Cons |
+|---|---|---|---|
+| **A. Proxy the API through the frontend domain** | Next.js rewrites (for example `/api/backend/:path*` → the backend URL); the browser only talks to the frontend's domain, so the cookie is first-party (`SameSite=Lax`) | No custom domain needed; no third-party cookies; CORS no longer needed for the browser | Every request goes through the frontend; **SSE chat streaming through the rewrite must be tested** (no buffering, time limits); the backend sees the proxy, so client-IP for rate limiting comes from forwarded headers |
+| **B. Custom domain for both** | e.g. `app.example.com` and `api.example.com`; cookie `Domain=.example.com`, `SameSite=Lax` | Clean, standard, same site; no proxy hop | Needs a domain the user owns and DNS setup on both Vercel projects |
+| C. Cross-site cookie | `SameSite=None; Secure`, `fetch(..., {credentials: "include"})`, CORS with credentials | Works with the current domains, no proxy | Third-party cookies are blocked by Safari and Firefox by default and increasingly by Chrome: **unreliable**, and needs CSRF tokens |
+| D. Bearer token in JavaScript | Token in memory or `localStorage`, `Authorization` header | No cookie issues | **Rejected:** breaks the `httpOnly` cookie rule; XSS can steal the token |
+
+A or B are the realistic choices; C and D are listed only to record why they are not used.
+
+**Known gap: password reset by email is out of scope for now.** There is no email sending, so a forgotten password cannot be reset by the user; an admin resets it manually (a documented command) until reset by email is added. Email verification on sign-up is out of scope for the same reason.
 
 **Existing data:** documents uploaded before auth have no owner. Decide in Step 2: delete them, or assign them to one account. (Production currently holds only test documents.)
 
@@ -144,9 +161,11 @@ Secrets live in Container Apps secrets or Key Vault references; the registry is 
 - [ ] Registry: a new Azure Container Registry, or an existing one
 - [ ] Confirmation that Vercel Blob stays (moving files to Azure Blob would change the frontend upload path)
 
-### 4.3 Upload experience
+### 4.3 Upload experience (confirmed)
 
-Moving ingestion to a worker means the summary is **no longer streamed live during upload**. The frontend shows job status (`pending` → `processing` → `completed` / `failed`) by polling, then shows the summary. Confirm this is acceptable before Step 4. (Streaming from the worker via Redis pub/sub or SSE is possible later but out of scope for now.)
+**Confirmed:** moving ingestion to a worker means the summary is **no longer streamed live during upload**. The frontend shows job status (`pending` → `processing` → `completed` / `failed`) by polling `GET /jobs/{job_id}`, and shows the whole summary when the job completes. Streaming the summary from the worker (via Redis pub/sub and SSE) is a possible later step, out of scope for now.
+
+This applies to upload only. Chat answers keep streaming token by token from `POST /chat/stream`, unchanged (§3 Constraints).
 
 ---
 
@@ -299,6 +318,10 @@ Initial proposals, to be confirmed after the architecture audit. Existing routes
 
 | Method / Route | Purpose |
 |---|---|
+| `POST /auth/register` | Create an account (email + password); sets the session cookie |
+| `POST /auth/login` | Check email + password, rate-limited, generic error; sets the session cookie |
+| `POST /auth/logout` | Revoke the session and clear the cookie |
+| `GET /auth/me` | The signed-in user (ID, email), or `401` |
 | `POST /documents/upload` | Validate, store the file, create and enqueue a job; returns `202` + job ID |
 | `GET /jobs/{job_id}` | Job status and result, owned by the authenticated user |
 | `GET /documents` | Documents owned by the authenticated user |
@@ -310,7 +333,9 @@ Initial proposals, to be confirmed after the architecture audit. Existing routes
 
 ### Data entities
 
-- **User:** from the auth provider (ID, email).
+- **User:** ID, email (unique, stored lowercased), password hash, `created_at`.
+- **Session:** hash of the session token, `user_id`, `created_at`, `expires_at`, `last_used_at`, `revoked_at`.
+- **Login attempt:** email, client IP, time, success (for rate limiting; may move to Redis later).
 - **Document:** existing table + `owner_user_id` (indexed), `content_hash` (unique per owner).
 - **Chunk:** existing table; ownership via its document. Search queries join on the owner.
 - **ProcessingJob:** `document_id`, `owner_user_id`, Celery task ID, status, attempts, error code, timestamps.
@@ -329,7 +354,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 |---|---|
 | **0. Preparation** | No user-visible behavior change. (a) One shared OpenRouter error wrapper in `services/` replaces the four copies of the mapping, and keeps `Retry-After` for every 429 (summary and embeddings too). (b) Turn off the SDK's silent retries (`max_retries=0`) on the shared client, so later app-level retries are the only retries and are counted. (c) Stop the two swallowed errors: `_delete_temporary_blob` logs a failed delete; `app/api/document-uploads/route.ts` logs the error before returning 400. (d) Fix the lint error in `app/page.tsx` and the unused import in `FileCard.tsx`, so `npm run lint` passes (needed for CI). (e) Update README (66 questions, hybrid chat, all optional settings), CLAUDE.md (where OpenRouter is called, known issues) and `backend/.env.example` (`OPENROUTER_CHAT_MODEL`, `RETRIEVAL_MIN_SIMILARITY`). Tests: existing suite passes; new tests for the wrapper (each error type, `Retry-After` kept, client built with `max_retries=0`) and for the logged blob-delete failure. |
 | **1. Architecture audit** | **Done** (revision 3 of this plan). Reviewed the code, CLAUDE.md and docs/design.md; §2 corrected; risks listed in §13. No code changes. |
-| **2. Auth, migrations and ownership** | Choose and add authentication (§4.1). Add Alembic and a baseline migration. Add `owner_user_id` and `content_hash`; scope every existing endpoint and search query to the user. Handle existing data. Tests that one user cannot read, search or delete another user's data. |
+| **2. Auth, migrations and ownership** | First choose the cross-domain cookie option (§4.1, A or B) and approve the hashing dependency. Add email + password auth per §4.1: `users` and `sessions` tables, register / login / logout / me endpoints, login rate limiting, generic login error, CSRF protection, no secrets in logs, login and sign-up pages. Tests: hashing, generic error, rate limit, cookie flags, logout revokes the session, no password or token in captured logs. Add Alembic and a baseline migration. Add `owner_user_id` and `content_hash`; scope every existing endpoint and search query to the user. Handle existing data. Tests that one user cannot read, search or delete another user's data. |
 | **3. Redis + Celery locally** | Redis and a worker in Docker Compose; a first trivial task; job table and states; `GET /jobs/{id}`. |
 | **4. Queue-based ingestion** | Move the full ingestion pipeline into the worker; `202` upload; frontend progress via polling; retries; idempotency by content hash; concurrent-upload limit and duplicate check enforced in the backend. |
 | **4b. Backfill** | Backfill script for documents without chunks (§6.1b): estimate first, idempotent, Neon branch first. |
@@ -376,6 +401,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - Streaming the summary live from the worker during upload.
 - Paid load tests against real models beyond one small, approved run.
 - Showing mock numbers as real metrics.
+- Password reset by email and email verification (known gap, §4.1); external sign-in providers.
 - Showing system-wide costs, queue details or other users' data in any user-facing view.
 - The remaining Phase 2 items (reranking, the full answers-mode baseline, few-shot citation fix) unless picked up separately.
 
@@ -384,9 +410,10 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 ## 12. Review and Approval Checklist
 
 ### Decisions
-- [ ] Authentication approach chosen (§4.1).
+- [x] Authentication approach chosen (§4.1): own email + password, `httpOnly` `Secure` cookie session.
+- [ ] Cross-domain cookie option chosen (§4.1: A proxy or B custom domain), at the start of Step 2.
 - [ ] Handling of existing documents without an owner decided.
-- [ ] Upload experience without live summary streaming accepted (§4.3).
+- [x] Upload experience without live summary streaming accepted (§4.3); chat streaming unchanged.
 - [x] Production hosting for Redis and the worker chosen (§4.2): Azure Container Apps + Azure Managed Redis.
 - [ ] Azure details provided (§4.2 list).
 
@@ -433,7 +460,7 @@ Things in the current code that would make the queue, workers, auth or caching h
 | 7 | **Upload rework conflicts with "don't rewrite working upload code".** The queue requires replacing the SSE upload reader in `DocumentsContext.tsx` and the two streaming endpoints. | Approved exception (§3 Constraints), limited to the upload flow. The extraction, chunking, embedding and save functions are reused unchanged by the worker. | 4 |
 | 8 | **Orphaned and silently undeleted blobs.** A failed worker or a swallowed delete error leaves temporary blobs behind. | Log failed deletes (Step 0); the worker deletes the blob when the job reaches a final state; a periodic cleanup task removes `documind/uploads/` blobs older than a set age with no active job. | 0, 4 |
 | 9 | **No input size cap for the summary.** Very large documents are sent whole to the summary model; the model's error comes back as a 502. A worker removes the time limit but not this. | Cap the summary input by estimated tokens (e.g. summarize the first N tokens, or summarize per section and combine), and fail the job with a clear, safe error code when over the limit. Measured with evals before and after if the prompt changes. | 4 |
-| 10 | **Next.js 16 compatibility for auth.** The app uses Next 16 with `cacheComponents` and experimental flags; auth libraries may lag. | Before choosing in Step 2, check that the chosen option supports Next 16 with `cacheComponents` (read `node_modules/next/dist/docs/` per AGENTS.md) with a small spike; no dependency is added without approval. | 2 |
+| 10 | **Cookies across two `vercel.app` domains, and Next.js 16.** The frontend and backend are different sites, so a backend session cookie is a third-party cookie (§4.1). If option A is chosen, Next 16 rewrites (with `cacheComponents` and experimental flags) must pass SSE chat through without buffering. | Choose option A or B at the start of Step 2. For A, a small spike first: chat SSE streams token by token through the rewrite, the cookie is set and sent, and the client IP reaches the backend (read `node_modules/next/dist/docs/` per AGENTS.md). | 2 |
 
 Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob authorization that only compares Origin and Host headers, which any script can fake (Step 2: the upload-token route requires a signed-in user); orphaned blobs (risk 8); documents without chunks (§6.1b); the 4.5 MB request limit (still applies, Blob stays) and the 300 s limit (no longer applies to ingestion once it runs in the worker); the lint failure (Step 0); Arabic PDFs (expected failures in the eval gate, not a regression).
 
@@ -443,4 +470,4 @@ Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob auth
 
 The Phase 3 learning areas and production-project requirements come from the *Junior AI Engineer Development Plan*. The current-state baseline comes from the Phase 2 codebase and `docs/design.md`. The Redis + Celery choice, the API contracts, data entities, implementation order and acceptance criteria are implementation proposals agreed with the user. My AI Analytics is an optional extension beyond the plan's requirements.
 
-**Next action:** the architecture audit (Step 1) is done and this plan reflects it. Begin with Step 0 (preparation), then decide authentication (§4.1) for Step 2. Provide the Azure details in §4.2 before Step 9.
+**Next action:** the architecture audit (Step 1) is done and this plan reflects it. Begin with Step 0 (preparation); authentication is decided (§4.1), and Step 2 starts by choosing the cross-domain cookie option. Provide the Azure details in §4.2 before Step 9.
