@@ -12,6 +12,8 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 import app.services.ai_calls as ai_calls
 from app.main import app
 import app.main as main
+from tests.default_user import DEFAULT_USER_EMAIL, DEFAULT_USER_ID
+from app.auth import User
 import app.services.summarizer as summarizer
 
 
@@ -122,7 +124,9 @@ def test_cancelled_stream_does_not_save_partial_document(monkeypatch):
         upload = StarletteUploadFile(
             filename="cancelled.txt", file=BytesIO(b"A document to cancel.")
         )
-        response = await main.upload_document_stream(upload)
+        response = await main.upload_document_stream(
+            upload, user=User(DEFAULT_USER_ID, DEFAULT_USER_EMAIL)
+        )
         iterator = response.body_iterator
         first_event = await anext(iterator)
         await iterator.aclose()
@@ -241,7 +245,9 @@ def test_cancelled_blob_stream_deletes_temporary_upload_without_persisting(monke
         upload = main.BlobSummaryRequest(
             pathname=pathname, filename="cancel.txt", file_size=10
         )
-        response = await main.upload_document_stream_from_blob(upload)
+        response = await main.upload_document_stream_from_blob(
+            upload, user=User(DEFAULT_USER_ID, DEFAULT_USER_EMAIL)
+        )
         first_event = await anext(response.body_iterator)
         await response.body_iterator.aclose()
         return first_event

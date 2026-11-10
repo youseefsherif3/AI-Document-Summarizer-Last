@@ -64,17 +64,25 @@ def hybrid_search(
     k: int,
     document_ids: Sequence[int] | None = None,
     min_similarity: float = 0.0,
+    *,
+    owner_user_id: int,
 ) -> list[ChunkMatch]:
-    """Top k chunks from vector search and full-text search, merged with RRF.
+    """Top k chunks of the user's documents from vector search and full-text search, merged
+    with RRF. Both searches see only documents owned by `owner_user_id`.
 
     The similarity threshold (if any) is applied to each chunk's vector similarity after
     fusion; 0 disables it, as in vector mode.
     """
     candidates = max(k, HYBRID_CANDIDATES)
-    vector_matches = search_chunks(query_embedding, k=candidates, document_ids=document_ids)
+    vector_matches = search_chunks(
+        query_embedding, k=candidates, document_ids=document_ids, owner_user_id=owner_user_id
+    )
     tsquery = build_tsquery(question)
     text_matches = (
-        full_text_search_chunks(query_embedding, tsquery, k=candidates, document_ids=document_ids)
+        full_text_search_chunks(
+            query_embedding, tsquery, k=candidates, document_ids=document_ids,
+            owner_user_id=owner_user_id,
+        )
         if tsquery
         else []
     )

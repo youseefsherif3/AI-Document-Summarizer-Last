@@ -11,6 +11,9 @@ from app import claim_documents
 from app.main import app
 
 
+pytestmark = pytest.mark.real_auth  # real users, no default signed-in user
+
+
 def sql(query, params=None):
     with database.get_connection() as connection:
         return connection.execute(text(query), params or {})
@@ -22,14 +25,14 @@ def add_user(email: str) -> int:
 
 
 def add_document(filename: str, owner: int | None = None) -> int:
-    document_id = database.save_document_with_chunks(
-        filename=filename, file_type=".txt", file_size=4, file_content=b"text",
-        extracted_text="text", summary="A summary.", document_chunks=[], embeddings=[],
-    )
-    if owner is not None:
-        sql("UPDATE documents SET owner_user_id = :owner WHERE id = :id",
-            {"owner": owner, "id": document_id})
-    return document_id
+    # With SQL: the app always saves documents with an owner, but documents uploaded
+    # before accounts existed have none.
+    return sql(
+        "INSERT INTO documents (filename, file_type, file_size, file_content, extracted_text, "
+        "summary, owner_user_id) VALUES (:filename, '.txt', 4, 'text', 'text', 'A summary.', "
+        ":owner) RETURNING id",
+        {"filename": filename, "owner": owner},
+    ).scalar_one()
 
 
 def owners() -> dict[str, int | None]:

@@ -16,6 +16,9 @@ import app.auth as auth
 import app.database as database
 from app.main import app
 
+
+pytestmark = pytest.mark.real_auth  # real users, no default signed-in user
+
 ORIGIN = "http://localhost:3000"
 PASSWORD = "correct horse battery"
 START = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)

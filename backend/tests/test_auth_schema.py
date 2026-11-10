@@ -11,6 +11,9 @@ from sqlalchemy.exc import IntegrityError
 import app.database as database
 
 
+pytestmark = pytest.mark.real_auth  # real users, no default signed-in user
+
+
 def run(sql: str, params: dict | None = None):
     with database.get_connection() as connection:
         return connection.execute(text(sql), params or {})

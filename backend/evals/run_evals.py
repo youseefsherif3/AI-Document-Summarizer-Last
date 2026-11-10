@@ -383,15 +383,27 @@ def ensure_database(url: str) -> None:
         engine.dispose()
 
 
-def reset_tables() -> None:
-    """Rebuild the eval database from the Alembic migrations (it is emptied every run)."""
+# The eval corpus belongs to this account; retrieval searches only its documents, as the app
+# does for a signed-in user.
+EVAL_USER_EMAIL = "eval-runner@documind.invalid"
+
+
+def reset_tables() -> int:
+    """Rebuild the eval database from the Alembic migrations (it is emptied every run) and
+    create the eval account. Returns the account's ID."""
     from app.migrate import reset_and_upgrade
 
     reset_and_upgrade(database.DATABASE_URL)
     database.check_database()
+    with database.get_connection() as connection:
+        return connection.execute(
+            text("INSERT INTO users (email, password_hash) VALUES (:email, 'no sign-in') "
+                 "RETURNING id"),
+            {"email": EVAL_USER_EMAIL},
+        ).scalar_one()
 
 
-async def index_corpus(corpus: list[CorpusFile], cache: EmbeddingCache) -> None:
+async def index_corpus(corpus: list[CorpusFile], cache: EmbeddingCache, owner_user_id: int) -> None:
     for corpus_file in corpus:
         vectors = await cache.embed([chunk.text for chunk in corpus_file.chunks])
         database.save_document_with_chunks(
@@ -403,6 +415,7 @@ async def index_corpus(corpus: list[CorpusFile], cache: EmbeddingCache) -> None:
             summary=None,
             document_chunks=corpus_file.chunks,
             embeddings=vectors,
+            owner_user_id=owner_user_id,
         )
 
 
@@ -536,13 +549,14 @@ class UsageCollector(logging.Handler):
 
 async def evaluate_question(item: dict, vector: list[float], settings: Settings,
                             answer_fn: AnswerFn, judge_fn: JudgeFn, sleep: SleepFn,
-                            pace_seconds: float, query: str | None = None) -> dict:
+                            pace_seconds: float, query: str | None = None, *,
+                            owner_user_id: int) -> dict:
     """`query` is what retrieval searches with (the rewritten question, if any); `vector`
     is its embedding."""
     query = query or item["question"]
     matches = chat.find_matches(
         query, vector, k=settings.top_k, mode=settings.retrieval_mode,
-        threshold=settings.min_similarity,
+        threshold=settings.min_similarity, owner_user_id=owner_user_id,
     )
     retrieved = [
         scoring.Retrieved(rank, match.filename, match.page_number, match.similarity)
@@ -964,8 +978,8 @@ async def run(log: RunLog, settings: Settings, questions: list[dict], corpus: li
         if database_url:
             ensure_database(database_url)
             database.DATABASE_URL = database_url
-        reset_tables()
-        await index_corpus(corpus, cache)
+        eval_user_id = reset_tables()
+        await index_corpus(corpus, cache, eval_user_id)
         vectors = await cache.embed([q["question"] for q in questions])
         log.append({"type": "indexing", "usage": collector.take()})
 
@@ -984,7 +998,8 @@ async def run(log: RunLog, settings: Settings, questions: list[dict], corpus: li
                 print(f"    rewritten: {query}", flush=True)
                 [vector] = await cache.embed([query])
             record = await evaluate_question(
-                item, vector, settings, answer_fn, judge_fn, sleep, pace_seconds, query=query
+                item, vector, settings, answer_fn, judge_fn, sleep, pace_seconds, query=query,
+                owner_user_id=eval_user_id,
             )
             record["usage"] = collector.take()
             log.append(record)

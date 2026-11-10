@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import text
 
 import app.database as database
+from tests.default_user import DEFAULT_USER_ID
 import app.services.chat as chat
 import app.services.retrieval as retrieval
 from app.services.chunking import Chunk
@@ -23,7 +24,7 @@ def save(filename, contents_and_vectors, pages=None):
     ]
     return database.save_document_with_chunks(
         filename, ".txt", 10, b"x", "text", "summary", chunks,
-        [vector for _, vector in contents_and_vectors],
+        [vector for _, vector in contents_and_vectors], owner_user_id=DEFAULT_USER_ID,
     )
 
 
@@ -98,8 +99,12 @@ def test_hybrid_finds_an_exact_term_that_vector_search_misses():
     ])
     query = vec(1, 0)
 
-    vector_only = chat.find_matches("Who owns RouteWise?", query, k=2, mode="vector")
-    hybrid = chat.find_matches("Who owns RouteWise?", query, k=2, mode="hybrid")
+    vector_only = chat.find_matches(
+        "Who owns RouteWise?", query, k=2, mode="vector", owner_user_id=DEFAULT_USER_ID
+    )
+    hybrid = chat.find_matches(
+        "Who owns RouteWise?", query, k=2, mode="hybrid", owner_user_id=DEFAULT_USER_ID
+    )
 
     assert "RouteWise" not in " ".join(m.content for m in vector_only)
     assert hybrid[0].content == "The RouteWise tool is owned by Operations."
@@ -109,7 +114,9 @@ def test_hybrid_finds_an_exact_term_that_vector_search_misses():
 def test_an_arabic_term_matches_with_the_simple_config():
     save("ar.txt", [("تقع مكتبة الواحة في وسط المدينة.", vec(0, 1)), ("نص آخر.", vec(1, 0))])
 
-    matches = database.full_text_search_chunks(vec(1, 0), retrieval.build_tsquery("أين مكتبة الواحة؟"))
+    matches = database.full_text_search_chunks(
+        vec(1, 0), retrieval.build_tsquery("أين مكتبة الواحة؟"), owner_user_id=DEFAULT_USER_ID
+    )
 
     assert [m.content for m in matches] == ["تقع مكتبة الواحة في وسط المدينة."]
 
@@ -121,7 +128,8 @@ def test_more_matching_words_rank_higher_in_full_text_search():
     ])
 
     matches = database.full_text_search_chunks(
-        vec(1), retrieval.build_tsquery("Brightwater RouteWise route planning")
+        vec(1), retrieval.build_tsquery("Brightwater RouteWise route planning"),
+        owner_user_id=DEFAULT_USER_ID,
     )
 
     assert matches[0].content == "Brightwater RouteWise route planning tool."
@@ -131,7 +139,10 @@ def test_document_filter_applies_to_both_lists():
     keep = save("keep.txt", [("Nothing relevant here.", vec(1, 0))])
     save("other.txt", [("RouteWise RouteWise RouteWise", vec(1, 0))])
 
-    matches = chat.find_matches("RouteWise?", vec(1, 0), document_ids=[keep], k=8, mode="hybrid")
+    matches = chat.find_matches(
+        "RouteWise?", vec(1, 0), document_ids=[keep], k=8, mode="hybrid",
+        owner_user_id=DEFAULT_USER_ID,
+    )
 
     assert {m.document_id for m in matches} == {keep}
 
@@ -140,8 +151,11 @@ def test_hybrid_returns_at_most_k_and_applies_the_threshold():
     save("doc.txt", [(f"Chunk {i} about RouteWise.", vec(1, i / 10)) for i in range(12)]
          + [("RouteWise only by words.", vec(0, 1))])
 
-    top = chat.find_matches("RouteWise", vec(1, 0), k=8, mode="hybrid")
-    filtered = chat.find_matches("RouteWise", vec(1, 0), k=8, mode="hybrid", threshold=0.5)
+    top = chat.find_matches("RouteWise", vec(1, 0), k=8, mode="hybrid",
+                            owner_user_id=DEFAULT_USER_ID)
+    filtered = chat.find_matches(
+        "RouteWise", vec(1, 0), k=8, mode="hybrid", threshold=0.5, owner_user_id=DEFAULT_USER_ID
+    )
 
     assert len(top) == 8
     assert all(m.similarity >= 0.5 for m in filtered)
@@ -150,8 +164,10 @@ def test_hybrid_returns_at_most_k_and_applies_the_threshold():
 def test_question_without_meaningful_words_falls_back_to_vector_order():
     save("doc.txt", [("First.", vec(1, 0)), ("Second.", vec(0.5, 0.5))])
 
-    hybrid = chat.find_matches("What is it?", vec(1, 0), k=2, mode="hybrid")
-    vector = chat.find_matches("What is it?", vec(1, 0), k=2, mode="vector")
+    hybrid = chat.find_matches("What is it?", vec(1, 0), k=2, mode="hybrid",
+                               owner_user_id=DEFAULT_USER_ID)
+    vector = chat.find_matches("What is it?", vec(1, 0), k=2, mode="vector",
+                               owner_user_id=DEFAULT_USER_ID)
 
     assert [m.chunk_id for m in hybrid] == [m.chunk_id for m in vector]
 
@@ -162,7 +178,8 @@ def test_hybrid_mode_is_the_default(monkeypatch):
                      ("Unrelated text.", vec(1, 0))])
 
     # Vector search alone ranks the unrelated chunk first; full-text search lifts RouteWise.
-    assert chat.find_matches("Who owns RouteWise?", vec(1, 0), k=2)[0].content == (
+    top = chat.find_matches("Who owns RouteWise?", vec(1, 0), k=2, owner_user_id=DEFAULT_USER_ID)
+    assert top[0].content == (
         "The RouteWise tool is owned by Operations."
     )
 
@@ -173,4 +190,4 @@ def test_vector_mode_never_runs_full_text_search(monkeypatch):
                         lambda *a, **k: pytest.fail("full-text search must not run in vector mode"))
     save("doc.txt", [("RouteWise", vec(1))])
 
-    assert len(chat.find_matches("RouteWise", vec(1))) == 1
+    assert len(chat.find_matches("RouteWise", vec(1), owner_user_id=DEFAULT_USER_ID)) == 1

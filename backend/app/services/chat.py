@@ -6,6 +6,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from functools import partial
 from typing import AsyncIterator, Sequence
 from contextlib import aclosing
 
@@ -115,21 +116,27 @@ def find_matches(
     k: int = RETRIEVAL_TOP_K,
     mode: str | None = None,
     threshold: float | None = None,
+    *,
+    owner_user_id: int,
 ) -> list[ChunkMatch]:
-    """The top k chunks for a question, by RETRIEVAL_MODE: hybrid (default) or vector."""
+    """The top k chunks of the user's documents for a question, by RETRIEVAL_MODE: hybrid
+    (default) or vector."""
     threshold = min_similarity() if threshold is None else threshold
     if (mode or retrieval_mode()) == "hybrid":
         return hybrid_search(question, vector, k=k, document_ids=document_ids,
-                             min_similarity=threshold)
-    return search_chunks(vector, k=k, document_ids=document_ids, min_similarity=threshold)
+                             min_similarity=threshold, owner_user_id=owner_user_id)
+    return search_chunks(vector, k=k, document_ids=document_ids, min_similarity=threshold,
+                         owner_user_id=owner_user_id)
 
 
 async def retrieve_sources(
-    question: str, document_ids: Sequence[int] | None = None
+    question: str, document_ids: Sequence[int] | None = None, *, owner_user_id: int
 ) -> list[Source]:
-    """The chunks most relevant to the question, numbered from 1."""
+    """The chunks of the user's documents most relevant to the question, numbered from 1."""
     vector = await embed_query(question)
-    matches = await run_in_threadpool(find_matches, question, vector, document_ids)
+    matches = await run_in_threadpool(
+        partial(find_matches, question, vector, document_ids, owner_user_id=owner_user_id)
+    )
     return sources_from_matches(matches)
 
 
@@ -190,11 +197,14 @@ async def prepare_answer(
     question: str,
     history: Sequence[HistoryMessage] = (),
     document_ids: Sequence[int] | None = None,
+    *,
+    owner_user_id: int,
 ) -> PreparedAnswer:
+    """Retrieve sources from the user's documents and build the answer prompt."""
     if not question.strip():
         raise ValueError("The question is empty.")
     search_query = await search_query_for(question, history)
-    sources = await retrieve_sources(search_query, document_ids)
+    sources = await retrieve_sources(search_query, document_ids, owner_user_id=owner_user_id)
     return PreparedAnswer(
         question=question,
         sources=sources,

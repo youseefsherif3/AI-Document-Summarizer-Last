@@ -9,6 +9,8 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 
 import app.database as database
 import app.main as main
+from tests.default_user import DEFAULT_USER_EMAIL, DEFAULT_USER_ID
+from app.auth import User
 from tests.pdf_builder import build_text_pdf
 
 DIMENSIONS = database.EMBEDDING_DIMENSIONS
@@ -184,7 +186,9 @@ def test_cancelling_mid_stream_cancels_embedding_and_saves_nothing(monkeypatch):
 
     async def cancel_after_first_event():
         file = StarletteUploadFile(filename="cancel.txt", file=BytesIO(b"Text to cancel."))
-        response = await main.upload_document_stream(file)
+        response = await main.upload_document_stream(
+            file, user=User(DEFAULT_USER_ID, DEFAULT_USER_EMAIL)
+        )
         first = await anext(response.body_iterator)
         await asyncio.sleep(0.05)  # embedding is now in progress
         await response.body_iterator.aclose()  # what a client disconnect does

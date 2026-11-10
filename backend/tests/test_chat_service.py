@@ -7,6 +7,7 @@ import pytest
 from openai import APIConnectionError
 
 import app.database as database
+from tests.default_user import DEFAULT_USER_ID
 import app.services.ai_calls as ai_calls
 import app.services.chat as chat
 import app.services.summarizer as summarizer
@@ -135,7 +136,8 @@ def save_document(filename, vectors, pages):
         for i in range(len(vectors))
     ]
     return database.save_document_with_chunks(
-        filename, ".pdf", 10, b"x", "text", "summary", chunks, vectors
+        filename, ".pdf", 10, b"x", "text", "summary", chunks, vectors,
+        owner_user_id=DEFAULT_USER_ID,
     )
 
 
@@ -149,7 +151,9 @@ def test_prepare_answer_retrieves_numbered_sources_from_the_database(monkeypatch
 
     monkeypatch.setattr(chat, "embed_query", fake_embed_query)
 
-    prepared = asyncio.run(chat.prepare_answer("What are the core habits?", document_ids=[plan]))
+    prepared = asyncio.run(chat.prepare_answer(
+        "What are the core habits?", document_ids=[plan], owner_user_id=DEFAULT_USER_ID
+    ))
 
     assert [(s.n, s.filename, s.page) for s in prepared.sources] == [
         (1, "plan.pdf", 1),
@@ -168,17 +172,17 @@ def test_retrieval_uses_top_k_and_the_threshold(monkeypatch):
     async def fake_embed_query(text):
         return vec(1)
 
-    def fake_search(vector, k, document_ids, min_similarity):
-        calls.append((k, document_ids, min_similarity))
+    def fake_search(vector, k, document_ids, min_similarity, owner_user_id):
+        calls.append((k, document_ids, min_similarity, owner_user_id))
         return []
 
     monkeypatch.setattr(chat, "embed_query", fake_embed_query)
     monkeypatch.setattr(chat, "search_chunks", fake_search)
     monkeypatch.setenv("RETRIEVAL_MIN_SIMILARITY", "0.4")
 
-    asyncio.run(chat.retrieve_sources("Question?", [3, 4]))
+    asyncio.run(chat.retrieve_sources("Question?", [3, 4], owner_user_id=DEFAULT_USER_ID))
 
-    assert calls == [(8, [3, 4], 0.4)]
+    assert calls == [(8, [3, 4], 0.4, DEFAULT_USER_ID)]
 
 
 def test_retrieval_uses_hybrid_search_by_default(monkeypatch):
@@ -187,8 +191,8 @@ def test_retrieval_uses_hybrid_search_by_default(monkeypatch):
     async def fake_embed_query(text):
         return vec(1)
 
-    def fake_hybrid(question, vector, k, document_ids, min_similarity):
-        calls.append((question, k, document_ids, min_similarity))
+    def fake_hybrid(question, vector, k, document_ids, min_similarity, owner_user_id):
+        calls.append((question, k, document_ids, min_similarity, owner_user_id))
         return []
 
     monkeypatch.delenv("RETRIEVAL_MODE", raising=False)
@@ -198,14 +202,14 @@ def test_retrieval_uses_hybrid_search_by_default(monkeypatch):
                         lambda *a, **k: pytest.fail("vector-only search must not run by default"))
     monkeypatch.setenv("RETRIEVAL_MIN_SIMILARITY", "0.4")
 
-    asyncio.run(chat.retrieve_sources("Question?", [3, 4]))
+    asyncio.run(chat.retrieve_sources("Question?", [3, 4], owner_user_id=DEFAULT_USER_ID))
 
-    assert calls == [("Question?", 8, [3, 4], 0.4)]
+    assert calls == [("Question?", 8, [3, 4], 0.4, DEFAULT_USER_ID)]
 
 
 def test_empty_question_is_rejected():
     with pytest.raises(ValueError, match="empty"):
-        asyncio.run(chat.prepare_answer("   "))
+        asyncio.run(chat.prepare_answer("   ", owner_user_id=DEFAULT_USER_ID))
 
 
 # --- Streaming the answer ------------------------------------------------------

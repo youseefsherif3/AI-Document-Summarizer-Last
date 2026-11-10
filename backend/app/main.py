@@ -6,8 +6,9 @@ import json
 import logging
 import os
 import re
+from functools import partial
 from typing import Literal
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 from vercel import blob
 
 from . import auth
+from .auth import User, current_user, require_trusted_origin
 from .extraction import extract_pages, join_pages
 from .database import (
     check_database,
@@ -122,7 +124,7 @@ def health_check():
 
 
 @app.get("/documents")
-def get_documents():
+def get_documents(user: User = Depends(current_user)):
     with get_connection() as connection:
         rows = connection.execute(
             text("""
@@ -134,8 +136,10 @@ def get_documents():
                 summary,
                 created_at
             FROM documents
+            WHERE owner_user_id = :owner_user_id
             ORDER BY created_at DESC, id DESC
-            """)
+            """),
+            {"owner_user_id": user.id},
         ).mappings().all()
 
     return [
@@ -152,11 +156,13 @@ def get_documents():
 
 
 @app.get("/dashboard")
-def get_dashboard():
+def get_dashboard(user: User = Depends(current_user)):
     with get_connection() as connection:
         rows = connection.execute(
             text("""SELECT id, filename, file_type, file_size, summary, created_at
-                    FROM documents ORDER BY created_at DESC, id DESC""")
+                    FROM documents WHERE owner_user_id = :owner_user_id
+                    ORDER BY created_at DESC, id DESC"""),
+            {"owner_user_id": user.id},
         ).mappings().all()
 
     types = {}
@@ -205,6 +211,7 @@ async def _summarize_and_index(
     file_content: bytes,
     extracted_text: str,
     document_chunks: list[Chunk],
+    owner_user_id: int,
 ):
     """SSE events for one upload: summary deltas, then `done` or `error`.
 
@@ -240,6 +247,7 @@ async def _summarize_and_index(
             summary=summary,
             document_chunks=document_chunks,
             embeddings=embeddings,
+            owner_user_id=owner_user_id,
         )
         yield _sse({"type": "done", "document_id": document_id, "summary": summary})
     except TimeoutError as error:
@@ -264,8 +272,10 @@ async def _summarize_and_index(
         await asyncio.gather(embedding_task, return_exceptions=True)
 
 
-@app.post("/documents/upload/stream")
-async def upload_document_stream(file: UploadFile = File(...)):
+@app.post("/documents/upload/stream", dependencies=[Depends(require_trusted_origin)])
+async def upload_document_stream(
+    file: UploadFile = File(...), user: User = Depends(current_user)
+):
     filename = file.filename or ""
     file_extension = (
         "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -289,15 +299,17 @@ async def upload_document_stream(file: UploadFile = File(...)):
 
     return StreamingResponse(
         _summarize_and_index(
-            filename, file_extension, file_content, extracted_text, document_chunks
+            filename, file_extension, file_content, extracted_text, document_chunks, user.id
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
 
 
-@app.post("/documents/upload/stream/blob")
-async def upload_document_stream_from_blob(upload: BlobSummaryRequest):
+@app.post("/documents/upload/stream/blob", dependencies=[Depends(require_trusted_origin)])
+async def upload_document_stream_from_blob(
+    upload: BlobSummaryRequest, user: User = Depends(current_user)
+):
     """Read a private Vercel Blob upload, then stream and persist its summary."""
     if not re.fullmatch(
         rf"{re.escape(BLOB_UPLOAD_PREFIX)}[A-Za-z0-9._-]+\.(pdf|docx|txt)",
@@ -361,7 +373,8 @@ async def upload_document_stream_from_blob(upload: BlobSummaryRequest):
             # aclosing: if the client disconnects, the inner stream is closed too.
             async with aclosing(
                 _summarize_and_index(
-                    upload.filename, file_extension, file_content, extracted_text, document_chunks
+                    upload.filename, file_extension, file_content, extracted_text,
+                    document_chunks, user.id,
                 )
             ) as stream:
                 async for event in stream:
@@ -377,11 +390,14 @@ async def upload_document_stream_from_blob(upload: BlobSummaryRequest):
 
 
 async def _chat_events(
-    message: str, history: list[HistoryMessage], document_ids: list[int] | None
+    message: str, history: list[HistoryMessage], document_ids: list[int] | None,
+    owner_user_id: int,
 ):
     """SSE events for one question: `sources`, then `delta`s, then `done` (or `error`)."""
     try:
-        prepared = await prepare_answer(message, history, document_ids)
+        prepared = await prepare_answer(
+            message, history, document_ids, owner_user_id=owner_user_id
+        )
         yield _sse(
             {
                 "type": "sources",
@@ -419,34 +435,35 @@ async def _chat_events(
         yield _sse({"type": "error", "status": 500, "message": "Could not answer the question."})
 
 
-@app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    """Answer a question about the stored documents, with numbered sources, as SSE."""
+@app.post("/chat/stream", dependencies=[Depends(require_trusted_origin)])
+async def chat_stream(request: ChatRequest, user: User = Depends(current_user)):
+    """Answer a question about the user's documents, with numbered sources, as SSE."""
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="The message is empty.")
 
     document_ids = sorted(set(request.document_ids or [])) or None
     if document_ids:
-        found = await run_in_threadpool(existing_document_ids, document_ids)
-        unknown = [document_id for document_id in document_ids if document_id not in found]
-        if unknown:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown document IDs: {', '.join(map(str, unknown))}.",
-            )
+        found = await run_in_threadpool(
+            partial(existing_document_ids, document_ids, owner_user_id=user.id)
+        )
+        if set(document_ids) - found:
+            # Unknown and other users' documents get the same answer, so the response never
+            # reveals whether a document exists.
+            raise HTTPException(status_code=404, detail="Document not found.")
 
     history = [HistoryMessage(item.role, item.content) for item in request.history]
     return StreamingResponse(
-        _chat_events(message, history, document_ids),
+        _chat_events(message, history, document_ids, user.id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
 
 
-@app.delete("/documents/{document_id}")
-def remove_document(document_id: int):
-    deleted = delete_document(document_id)
+@app.delete("/documents/{document_id}", dependencies=[Depends(require_trusted_origin)])
+def remove_document(document_id: int, user: User = Depends(current_user)):
+    # Another user's document is "not found", like a document that doesn't exist.
+    deleted = delete_document(document_id, owner_user_id=user.id)
 
     if not deleted:
         raise HTTPException(

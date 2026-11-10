@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 import app.database as database
+from tests.default_user import DEFAULT_USER_ID
 from app.services.chunking import Chunk
 
 DIMENSIONS = database.EMBEDDING_DIMENSIONS
@@ -45,6 +46,7 @@ def save(filename, chunk_vectors, pages=None):
         summary="A summary.",
         document_chunks=chunks,
         embeddings=chunk_vectors,
+        owner_user_id=DEFAULT_USER_ID,
     )
 
 
@@ -81,7 +83,7 @@ def test_document_and_chunks_are_saved_together():
 def test_search_returns_nearest_first_with_cosine_similarity():
     document_id = save("doc.txt", [vec(0, 1), vec(1, 1), vec(1, 0), vec(-1, 0)])
 
-    matches = database.search_chunks(vec(1, 0), k=4)
+    matches = database.search_chunks(vec(1, 0), k=4, owner_user_id=DEFAULT_USER_ID)
 
     assert [m.chunk_index for m in matches] == [2, 1, 0, 3]
     assert [round(m.similarity, 3) for m in matches] == [1.0, 0.707, 0.0, -1.0]
@@ -94,16 +96,20 @@ def test_search_returns_nearest_first_with_cosine_similarity():
 def test_search_limits_results_to_k():
     save("doc.txt", [vec(1, i / 10) for i in range(10)])
 
-    assert len(database.search_chunks(vec(1, 0), k=3)) == 3
+    assert len(database.search_chunks(vec(1, 0), k=3, owner_user_id=DEFAULT_USER_ID)) == 3
 
 
 def test_search_can_be_limited_to_some_documents():
     first = save("first.txt", [vec(1, 0), vec(0.9, 0.1)])
     second = save("second.txt", [vec(0.5, 0.5), vec(0, 1)])
 
-    everything = database.search_chunks(vec(1, 0), k=10)
-    only_second = database.search_chunks(vec(1, 0), k=10, document_ids=[second])
-    both = database.search_chunks(vec(1, 0), k=10, document_ids=[first, second])
+    everything = database.search_chunks(vec(1, 0), k=10, owner_user_id=DEFAULT_USER_ID)
+    only_second = database.search_chunks(
+        vec(1, 0), k=10, document_ids=[second], owner_user_id=DEFAULT_USER_ID
+    )
+    both = database.search_chunks(
+        vec(1, 0), k=10, document_ids=[first, second], owner_user_id=DEFAULT_USER_ID
+    )
 
     assert {m.document_id for m in everything} == {first, second}
     assert {m.document_id for m in only_second} == {second}
@@ -111,13 +117,15 @@ def test_search_can_be_limited_to_some_documents():
         (m.similarity for m in only_second), reverse=True
     )
     assert len(both) == 4
-    assert database.search_chunks(vec(1, 0), document_ids=[]) == []
+    assert database.search_chunks(vec(1, 0), document_ids=[], owner_user_id=DEFAULT_USER_ID) == []
 
 
 def test_min_similarity_drops_weak_matches():
     save("doc.txt", [vec(1, 0), vec(1, 1), vec(0, 1)])
 
-    matches = database.search_chunks(vec(1, 0), k=10, min_similarity=0.5)
+    matches = database.search_chunks(
+        vec(1, 0), k=10, min_similarity=0.5, owner_user_id=DEFAULT_USER_ID
+    )
 
     assert [round(m.similarity, 3) for m in matches] == [1.0, 0.707]
 
@@ -126,11 +134,12 @@ def test_deleting_a_document_deletes_its_chunks():
     keep = save("keep.txt", [vec(1, 0)])
     remove = save("remove.txt", [vec(1, 0), vec(0, 1)])
 
-    assert database.delete_document(remove) is True
+    assert database.delete_document(remove, owner_user_id=DEFAULT_USER_ID) is True
 
     assert count("chunks", remove) == 0
     assert count("chunks", keep) == 1
-    assert {m.document_id for m in database.search_chunks(vec(1, 0), k=10)} == {keep}
+    remaining = database.search_chunks(vec(1, 0), k=10, owner_user_id=DEFAULT_USER_ID)
+    assert {m.document_id for m in remaining} == {keep}
 
 
 def test_failed_chunk_insert_leaves_no_document():
@@ -138,7 +147,8 @@ def test_failed_chunk_insert_leaves_no_document():
 
     with pytest.raises(IntegrityError):
         database.save_document_with_chunks(
-            "broken.txt", ".txt", 10, b"x", "text", "summary", duplicate_index, [vec(1), vec(1)]
+            "broken.txt", ".txt", 10, b"x", "text", "summary", duplicate_index, [vec(1), vec(1)],
+            owner_user_id=DEFAULT_USER_ID,
         )
 
     assert count("documents") == 0
@@ -156,7 +166,8 @@ def test_failed_chunk_insert_leaves_no_document():
 def test_invalid_input_is_rejected_before_saving(chunk_list, vectors, message):
     with pytest.raises(ValueError, match=message):
         database.save_document_with_chunks(
-            "bad.txt", ".txt", 10, b"x", "text", "summary", chunk_list, vectors
+            "bad.txt", ".txt", 10, b"x", "text", "summary", chunk_list, vectors,
+            owner_user_id=DEFAULT_USER_ID,
         )
 
     assert count("documents") == 0
@@ -164,9 +175,9 @@ def test_invalid_input_is_rejected_before_saving(chunk_list, vectors, message):
 
 def test_search_validates_its_input():
     with pytest.raises(ValueError, match="k must be positive"):
-        database.search_chunks(vec(1), k=0)
+        database.search_chunks(vec(1), k=0, owner_user_id=DEFAULT_USER_ID)
     with pytest.raises(ValueError, match=f"Expected a {DIMENSIONS}-dimension vector"):
-        database.search_chunks([1.0, 2.0])
+        database.search_chunks([1.0, 2.0], owner_user_id=DEFAULT_USER_ID)
 
 
 def test_document_without_chunks_can_still_be_saved():

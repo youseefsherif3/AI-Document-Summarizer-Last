@@ -8,6 +8,7 @@ import pytest
 
 import app.services.chat as chat
 import app.services.llm as llm
+from tests.default_user import DEFAULT_USER_ID
 import app.services.query_rewrite as query_rewrite
 from app.services.chat import HistoryMessage
 from app.services.query_rewrite import EmptyRewriteError
@@ -113,7 +114,8 @@ def searched(monkeypatch):
     """Records the text retrieval searches with."""
     queries = []
 
-    async def fake_retrieve(question, document_ids=None):
+    async def fake_retrieve(question, document_ids=None, *, owner_user_id):
+        assert owner_user_id == DEFAULT_USER_ID
         queries.append(question)
         return []
 
@@ -127,7 +129,9 @@ def test_chat_searches_with_the_rewritten_question_but_answers_the_original(
     monkeypatch.setenv("QUERY_REWRITE_ENABLED", "true")
     monkeypatch.setenv("QUERY_REWRITE_MODEL", "m/rewrite")
 
-    prepared = asyncio.run(chat.prepare_answer("And Brightwater?", HISTORY))
+    prepared = asyncio.run(
+        chat.prepare_answer("And Brightwater?", HISTORY, owner_user_id=DEFAULT_USER_ID)
+    )
 
     assert searched == ["How many days of annual leave do Brightwater employees get?"]
     assert prepared.search_query == searched[0]
@@ -140,16 +144,18 @@ def test_rewrite_model_falls_back_to_the_chat_model(fake_model, searched, monkey
     monkeypatch.delenv("QUERY_REWRITE_MODEL", raising=False)
     monkeypatch.setenv("OPENROUTER_CHAT_MODEL", "m/chat")
 
-    asyncio.run(chat.prepare_answer("And Brightwater?", HISTORY))
+    asyncio.run(chat.prepare_answer("And Brightwater?", HISTORY, owner_user_id=DEFAULT_USER_ID))
 
     assert fake_model["requests"][0]["model"] == "m/chat"
 
 
 def test_chat_makes_no_rewrite_call_when_disabled_or_without_history(fake_model, searched, monkeypatch):
     monkeypatch.delenv("QUERY_REWRITE_ENABLED", raising=False)
-    asyncio.run(chat.prepare_answer("And Brightwater?", HISTORY))
+    asyncio.run(chat.prepare_answer("And Brightwater?", HISTORY, owner_user_id=DEFAULT_USER_ID))
     monkeypatch.setenv("QUERY_REWRITE_ENABLED", "true")
-    prepared = asyncio.run(chat.prepare_answer("How long is parental leave?", []))
+    prepared = asyncio.run(
+        chat.prepare_answer("How long is parental leave?", [], owner_user_id=DEFAULT_USER_ID)
+    )
 
     assert fake_model["requests"] == []
     assert searched == ["And Brightwater?", "How long is parental leave?"]
@@ -163,7 +169,7 @@ def test_a_failed_rewrite_is_logged_and_the_original_question_is_used(
     monkeypatch.setenv("QUERY_REWRITE_ENABLED", "true")
     fake_model["reply"] = error  # "" = an empty reply
 
-    asyncio.run(chat.prepare_answer("And Brightwater?", HISTORY))
+    asyncio.run(chat.prepare_answer("And Brightwater?", HISTORY, owner_user_id=DEFAULT_USER_ID))
 
     assert searched == ["And Brightwater?"]
     assert "Query rewrite failed; searching with the original question." in caplog.text

@@ -121,3 +121,42 @@ def clean_database(test_database):
         connection.execute(text(
             "TRUNCATE TABLE documents, users, login_attempts RESTART IDENTITY CASCADE"
         ))
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_auth: the test uses real sign-in and CSRF checks, with no default signed-in user",
+    )
+
+
+@pytest.fixture(autouse=True)
+def default_user(request, clean_database):
+    """Most tests act as one signed-in user (DEFAULT_USER_ID), with the session and CSRF
+    checks replaced, so they can focus on what they test.
+
+    Tests of sign-in, CSRF and data isolation are marked `real_auth`: they get no default
+    user and go through the real checks. The isolation tests also check that every route
+    requires a session, so this shortcut can't hide a missing check.
+    """
+    import app.auth as auth
+    from tests.default_user import DEFAULT_USER_EMAIL, DEFAULT_USER_ID
+
+    if request.node.get_closest_marker("real_auth"):
+        yield None
+        return
+    with database.get_connection() as connection:
+        user_id = connection.execute(
+            text("INSERT INTO users (email, password_hash) VALUES (:email, 'not a real hash') "
+                 "RETURNING id"),
+            {"email": DEFAULT_USER_EMAIL},
+        ).scalar_one()
+    assert user_id == DEFAULT_USER_ID
+    user = auth.User(id=user_id, email=DEFAULT_USER_EMAIL)
+    main.app.dependency_overrides[auth.current_user] = lambda: user
+    main.app.dependency_overrides[auth.require_trusted_origin] = lambda: None
+    try:
+        yield user
+    finally:
+        main.app.dependency_overrides.pop(auth.current_user, None)
+        main.app.dependency_overrides.pop(auth.require_trusted_origin, None)

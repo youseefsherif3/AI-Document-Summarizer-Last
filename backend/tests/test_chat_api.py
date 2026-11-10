@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
 import app.database as database
+from tests.default_user import DEFAULT_USER_EMAIL, DEFAULT_USER_ID
+from app.auth import User
 import app.main as main
 import app.services.chat as chat
 from app.services.chunking import Chunk
@@ -29,7 +31,8 @@ def save_document(filename, contents, pages=None, vectors=None):
     ]
     vectors = vectors or [vec(1) for _ in contents]
     return database.save_document_with_chunks(
-        filename, ".pdf", 10, b"x", "text", "summary", chunks, vectors
+        filename, ".pdf", 10, b"x", "text", "summary", chunks, vectors,
+        owner_user_id=DEFAULT_USER_ID,
     )
 
 
@@ -175,8 +178,9 @@ def test_unknown_document_ids_are_rejected(model):
     with TestClient(main.app) as client:
         response, _ = ask(client, message="Question?", document_ids=[known, 9998, 9999])
 
-    assert response.status_code == 400
-    assert response.json() == {"detail": "Unknown document IDs: 9998, 9999."}
+    # 404, like another user's document, so the answer never reveals what exists.
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Document not found."}
     assert model.requests == []
 
 
@@ -258,7 +262,9 @@ def test_client_disconnect_closes_the_model_stream(model, caplog):
     model.stream = stream
 
     async def disconnect_after_first_delta():
-        response = await main.chat_stream(main.ChatRequest(message="Question?"))
+        response = await main.chat_stream(
+            main.ChatRequest(message="Question?"), user=User(DEFAULT_USER_ID, DEFAULT_USER_EMAIL)
+        )
         events = [await anext(response.body_iterator), await anext(response.body_iterator)]
         await response.body_iterator.aclose()  # what a client disconnect does
         return events

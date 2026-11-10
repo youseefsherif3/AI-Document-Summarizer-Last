@@ -62,6 +62,7 @@ documents = Table(
     Column("extracted_text", Text, nullable=False),
     Column("summary", Text, nullable=True),
     Column("created_at", DateTime, server_default=text("CURRENT_TIMESTAMP")),
+    Column("owner_user_id", Integer, nullable=True),
 )
 
 
@@ -190,6 +191,7 @@ def _insert_document(
     file_content: bytes,
     extracted_text: str,
     summary: str | None,
+    owner_user_id: int,
 ) -> int:
     result = connection.execute(
         documents.insert().values(
@@ -199,6 +201,7 @@ def _insert_document(
             file_content=file_content,
             extracted_text=extracted_text,
             summary=summary,
+            owner_user_id=owner_user_id,
         )
     )
     return result.inserted_primary_key[0]
@@ -213,8 +216,10 @@ def save_document_with_chunks(
     summary: str | None,
     document_chunks: Sequence[Chunk],
     embeddings: Sequence[Sequence[float]],
+    *,
+    owner_user_id: int,
 ) -> int:
-    """Save a document and its chunks in one transaction: all of it or nothing."""
+    """Save a user's document and its chunks in one transaction: all of it or nothing."""
     if len(document_chunks) != len(embeddings):
         raise ValueError(
             f"Got {len(document_chunks)} chunks but {len(embeddings)} embeddings."
@@ -232,7 +237,8 @@ def save_document_with_chunks(
 
     with get_connection() as connection:
         document_id = _insert_document(
-            connection, filename, file_type, file_size, file_content, extracted_text, summary
+            connection, filename, file_type, file_size, file_content, extracted_text, summary,
+            owner_user_id,
         )
         if rows:
             connection.execute(
@@ -259,8 +265,9 @@ _SEARCH_CHUNKS_SQL = text(
         1 - (c.embedding <=> CAST(:query AS vector)) AS similarity
     FROM chunks AS c
     JOIN documents AS d ON d.id = c.document_id
-    WHERE CAST(:document_ids AS integer[]) IS NULL
-       OR c.document_id = ANY(CAST(:document_ids AS integer[]))
+    WHERE d.owner_user_id = :owner_user_id
+      AND (CAST(:document_ids AS integer[]) IS NULL
+           OR c.document_id = ANY(CAST(:document_ids AS integer[])))
     ORDER BY c.embedding <=> CAST(:query AS vector)
     LIMIT :k
     """
@@ -272,10 +279,13 @@ def search_chunks(
     k: int = 8,
     document_ids: Sequence[int] | None = None,
     min_similarity: float = 0.0,
+    *,
+    owner_user_id: int,
 ) -> list[ChunkMatch]:
-    """The k chunks closest to the query, most similar first.
+    """The k chunks of the user's documents closest to the query, most similar first.
 
-    `document_ids=None` searches every document; a list limits the search to those.
+    Only documents owned by `owner_user_id` are searched. `document_ids=None` searches all
+    of them; a list limits the search to those.
     Chunks below `min_similarity` are dropped. 0 (the default) disables the threshold
     and keeps everything, including negative similarities.
     """
@@ -285,16 +295,17 @@ def search_chunks(
         return []
 
     with get_connection() as connection:
-        if document_ids is not None:
-            # With a filter, let the HNSW index keep scanning until it finds k matching
-            # chunks (pgvector >= 0.8), instead of returning fewer than k.
-            connection.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
+        # The owner filter (and any document filter) is applied after the HNSW index finds
+        # its nearest chunks. Let the index keep scanning until it finds k chunks that pass
+        # (pgvector >= 0.8); otherwise other users' chunks could leave fewer than k.
+        connection.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
         rows = connection.execute(
             _SEARCH_CHUNKS_SQL,
             {
                 "query": _vector_literal(query_embedding),
                 "document_ids": list(document_ids) if document_ids is not None else None,
                 "k": k,
+                "owner_user_id": owner_user_id,
             },
         ).mappings().all()
 
@@ -317,6 +328,7 @@ _FULL_TEXT_SEARCH_SQL = text(
     FROM chunks AS c
     JOIN documents AS d ON d.id = c.document_id
     WHERE c.content_tsv @@ to_tsquery('simple', :tsquery)
+      AND d.owner_user_id = :owner_user_id
       AND (CAST(:document_ids AS integer[]) IS NULL
            OR c.document_id = ANY(CAST(:document_ids AS integer[])))
     ORDER BY ts_rank_cd(c.content_tsv, to_tsquery('simple', :tsquery)) DESC, c.id
@@ -330,8 +342,11 @@ def full_text_search_chunks(
     tsquery: str,
     k: int = 20,
     document_ids: Sequence[int] | None = None,
+    *,
+    owner_user_id: int,
 ) -> list[ChunkMatch]:
-    """The k chunks whose words best match `tsquery` (Postgres full-text search), best first.
+    """The k chunks of the user's documents whose words best match `tsquery` (Postgres
+    full-text search), best first. Only documents owned by `owner_user_id` are searched.
 
     `tsquery` must be a to_tsquery expression of plain words (see services/retrieval.py).
     `query_embedding` is only used to report each chunk's cosine similarity.
@@ -348,27 +363,34 @@ def full_text_search_chunks(
                 "tsquery": tsquery,
                 "document_ids": list(document_ids) if document_ids is not None else None,
                 "k": k,
+                "owner_user_id": owner_user_id,
             },
         ).mappings().all()
     return [ChunkMatch(**row) for row in rows]
 
 
-def existing_document_ids(document_ids: Sequence[int]) -> set[int]:
-    """The subset of `document_ids` that exist."""
+def existing_document_ids(document_ids: Sequence[int], *, owner_user_id: int) -> set[int]:
+    """The subset of `document_ids` that exist and belong to the user."""
     if not document_ids:
         return set()
     with get_connection() as connection:
         rows = connection.execute(
-            text("SELECT id FROM documents WHERE id = ANY(CAST(:ids AS integer[]))"),
-            {"ids": list(document_ids)},
+            text("SELECT id FROM documents "
+                 "WHERE id = ANY(CAST(:ids AS integer[])) AND owner_user_id = :owner_user_id"),
+            {"ids": list(document_ids), "owner_user_id": owner_user_id},
         ).scalars()
         return set(rows)
 
 
-def delete_document(document_id: int):
+def delete_document(document_id: int, *, owner_user_id: int) -> bool:
+    """Delete one of the user's documents. False if there is no such document for this user
+    (another user's document counts as not found)."""
     # The chunks foreign key is ON DELETE CASCADE, so this also deletes the chunks.
     with get_connection() as connection:
         result = connection.execute(
-            documents.delete().where(documents.c.id == document_id)
+            documents.delete().where(
+                documents.c.id == document_id,
+                documents.c.owner_user_id == owner_user_id,
+            )
         )
         return result.rowcount > 0
