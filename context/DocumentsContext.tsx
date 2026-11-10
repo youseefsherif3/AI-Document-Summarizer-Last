@@ -12,7 +12,8 @@ import {
 
 import type { UploadedDocument, DocumentType } from "@/types/document";
 import { upload as uploadBlob } from "@vercel/blob/client";
-import { apiUrl } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { apiFetch } from "@/lib/api";
 import { userUploadPrefix } from "@/lib/upload-paths";
 
 import {
@@ -56,6 +57,8 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
   const [documents, setDocuments] = useState<UploadedDocument[]>([]);
   const [error, setError] = useState<string | null>(null);
   const controllers = useRef(new Map<string, AbortController>());
+  const { user } = useAuth();
+  const userId = user?.id;
 
   const mapBackendDocuments = (data: BackendDocument[]): UploadedDocument[] =>
     data.map((document) => ({
@@ -71,20 +74,22 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     }));
 
   const refreshDocuments = async () => {
-    const response = await fetch(apiUrl("/documents"), { cache: "no-store" });
+    const response = await apiFetch("/documents", { cache: "no-store" });
     if (!response.ok) throw new Error("Failed to retrieve saved documents.");
     const saved = mapBackendDocuments(await response.json());
     // Keep uploads that are still running; they are not in the database yet.
     setDocuments((current) => [...saved, ...current.filter(isUploading)]);
   };
 
-  // Restore saved documents when the application starts.
+  // Load the signed-in user's saved documents. Signing out reloads the page, so documents
+  // from one account never stay in memory for the next.
   useEffect(() => {
+    if (userId === undefined) return;
     let isMounted = true;
 
     const fetchDocuments = async () => {
       try {
-        const response = await fetch(apiUrl("/documents"));
+        const response = await apiFetch("/documents");
 
         if (!response.ok) {
           throw new Error("Failed to retrieve saved documents.");
@@ -111,7 +116,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [userId]);
 
   const updateDocument = (
     id: string,
@@ -146,12 +151,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
         const extension = document.name.split(".").pop()?.toLowerCase();
         // Uploads go to the signed-in user's own Blob folder; the token route and the
         // backend refuse any other path.
-        const me = await fetch(apiUrl("/auth/me"), {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!me.ok) throw new Error("Please sign in again to upload.");
-        const { id: userId } = (await me.json()) as { id: number };
+        if (userId === undefined) throw new Error("Please sign in again to upload.");
         const blob = await uploadBlob(
           `${userUploadPrefix(userId)}${document.id}.${extension}`,
           document.file,
@@ -163,7 +163,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
           },
         );
         updateDocument(document.id, { progress: 50 });
-        response = await fetch(apiUrl("/documents/upload/stream/blob"), {
+        response = await apiFetch("/documents/upload/stream/blob", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -176,7 +176,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
       } else {
         const formData = new FormData();
         formData.append("file", document.file);
-        response = await fetch(apiUrl("/documents/upload/stream"), {
+        response = await apiFetch("/documents/upload/stream", {
           method: "POST",
           body: formData,
           signal: controller.signal,
@@ -342,8 +342,8 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
-      const response = await fetch(
-        apiUrl(`/documents/${document.backendId}`),
+      const response = await apiFetch(
+        `/documents/${document.backendId}`,
         {
           method: "DELETE",
         },

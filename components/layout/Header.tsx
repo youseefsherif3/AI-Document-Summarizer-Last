@@ -1,8 +1,9 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Bell, Menu, Search, UserRound } from "lucide-react";
+import { Bell, LogOut, Menu, Search, UserRound } from "lucide-react";
 
+import { useAuth } from "@/context/AuthContext";
 import { pageTitle } from "./navItems";
 
 interface HeaderProps {
@@ -12,6 +13,7 @@ interface HeaderProps {
 
 export default function Header({ onMenuClick }: HeaderProps) {
   const pathname = usePathname();
+  const { user, logout } = useAuth();
 
   return (
     <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-[#111827] px-4 sm:h-20 sm:gap-5 sm:px-6 lg:px-8">
@@ -52,8 +54,24 @@ export default function Header({ onMenuClick }: HeaderProps) {
           <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-violet-500" />
         </button>
 
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-600/20 text-violet-400">
-          <UserRound size={20} />
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-600/20 text-violet-400">
+            <UserRound size={20} />
+          </div>
+          {user && (
+            <span className="hidden max-w-48 truncate text-sm text-gray-300 lg:block" title={user.email}>
+              {user.email}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => void logout()}
+            aria-label="Sign out"
+            title="Sign out"
+            className="rounded-xl p-2 text-gray-400 transition hover:bg-white/5 hover:text-white"
+          >
+            <LogOut size={20} />
+          </button>
         </div>
       </div>
     </header>

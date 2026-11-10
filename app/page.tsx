@@ -6,13 +6,13 @@ import WelcomeSection from "@/components/dashboard/WelcomeSection";
 import StatsCards from "@/components/dashboard/StatsCards";
 import RecentActivity from "@/components/dashboard/RecentActivity";
 import type { DashboardData } from "@/types/dashboard";
-import { apiUrl } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 type DashboardResult = { data: DashboardData } | { error: string };
 
 async function loadDashboard(): Promise<DashboardResult> {
   try {
-    const response = await fetch(apiUrl("/dashboard"), { cache: "no-store" });
+    const response = await apiFetch("/dashboard", { cache: "no-store" });
     if (!response.ok) throw new Error("Could not load dashboard data.");
     return { data: await response.json() };
   } catch (reason) {

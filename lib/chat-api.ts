@@ -1,4 +1,4 @@
-import { apiUrl } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 import { readSseEvents } from "@/lib/sse";
 import type { ChatMessageRole, ChatSource } from "@/types/chat";
 
@@ -54,7 +54,7 @@ export async function streamChatAnswer(
 ): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(apiUrl("/chat/stream"), {
+    response = await apiFetch("/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

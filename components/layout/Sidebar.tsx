@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Settings, HelpCircle, Sparkles, X } from "lucide-react";
 
+import { useAuth } from "@/context/AuthContext";
 import { navItems } from "./navItems";
 
 interface SidebarProps {
@@ -14,6 +15,7 @@ interface SidebarProps {
 
 export default function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
+  const { user } = useAuth();
 
   return (
     <>
@@ -93,6 +95,16 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             <HelpCircle size={19} />
             Help & Support
           </Link>
+
+          {/* The header shows the email only from 1024px; below that it is shown here. */}
+          {user && (
+            <div className="mt-5 border-t border-white/10 pt-5 lg:hidden">
+              <p className="text-xs text-gray-500">Signed in as</p>
+              <p className="mt-1 truncate text-sm font-medium text-white" title={user.email}>
+                {user.email}
+              </p>
+            </div>
+          )}
 
           <div className="mt-5 border-t border-white/10 pt-5">
             <p className="text-xs text-gray-500">Powered by AI</p>
