@@ -11,12 +11,12 @@ from typing import Literal
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import text
 from pydantic import BaseModel, Field
 from vercel import blob
 
-from . import auth
+from . import auth, limits
 from .auth import User, current_user, require_trusted_origin
 from .extraction import extract_pages, join_pages
 from .database import (
@@ -50,6 +50,7 @@ _app_logger.setLevel(logging.INFO)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Read-only: the schema comes from Alembic migrations, never from startup code.
+    limits.check_limit_settings()
     check_database()
     yield
 
@@ -78,6 +79,16 @@ app.add_middleware(
 # Re-sends the session cookie when a visit renewed the session (also on streamed responses).
 app.add_middleware(auth.SessionCookieMiddleware)
 app.include_router(auth.router)
+
+
+@app.exception_handler(limits.DailyLimitReached)
+async def daily_limit_reached(request, error: limits.DailyLimitReached):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": str(error), "code": "daily_limit"},
+        headers={"Retry-After": str(error.retry_after)},
+    )
+
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
@@ -296,6 +307,8 @@ async def upload_document_stream(
         raise HTTPException(status_code=400, detail="Could not read the uploaded file.") from error
     if not extracted_text.strip():
         raise HTTPException(status_code=400, detail="No readable text found in the uploaded file.")
+    # Counted before any AI call; an invalid file above doesn't use up the allowance.
+    await run_in_threadpool(limits.enforce_daily_limit, user.id, "upload")
 
     return StreamingResponse(
         _summarize_and_index(
@@ -367,6 +380,11 @@ async def upload_document_stream_from_blob(
             status_code=400,
             detail="No readable text found in the uploaded file.",
         )
+    try:
+        await run_in_threadpool(limits.enforce_daily_limit, user.id, "upload")
+    except limits.DailyLimitReached:
+        await _delete_temporary_blob(upload.pathname)
+        raise
 
     async def events():
         try:
@@ -451,6 +469,8 @@ async def chat_stream(request: ChatRequest, user: User = Depends(current_user)):
             # Unknown and other users' documents get the same answer, so the response never
             # reveals whether a document exists.
             raise HTTPException(status_code=404, detail="Document not found.")
+
+    await run_in_threadpool(limits.enforce_daily_limit, user.id, "chat")
 
     history = [HistoryMessage(item.role, item.content) for item in request.history]
     return StreamingResponse(

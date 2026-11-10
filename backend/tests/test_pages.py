@@ -196,5 +196,8 @@ def test_upload_runs_extraction_and_saving_in_a_threadpool(monkeypatch):
         )
 
     assert '"type": "done"' in response.text
-    # Extraction + chunking, then the database write: both off the event loop.
-    assert calls == [main._read_document, main.save_document_with_chunks]
+    # Extraction + chunking, the daily-limit count, then the database write: all off the
+    # event loop.
+    assert calls == [
+        main._read_document, main.limits.enforce_daily_limit, main.save_document_with_chunks
+    ]
