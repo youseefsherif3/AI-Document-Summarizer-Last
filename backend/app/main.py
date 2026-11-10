@@ -30,6 +30,7 @@ from app.services.chat import HistoryMessage, prepare_answer, stream_answer
 from app.services.chunking import Chunk, chunk_pages
 from app.services.embeddings import embed_texts
 from app.services.summarizer import (
+    AIOutOfCreditError,
     AIRateLimitError,
     AIServiceError,
     AIServiceNotConfiguredError,
@@ -274,6 +275,9 @@ async def _summarize_and_index(
         yield _sse({"type": "error", "status": 503, "message": str(error)})
     except AIRateLimitError as error:
         yield _sse({"type": "error", "status": 429, "message": str(error)})
+    except AIOutOfCreditError as error:
+        # The service is unavailable to everyone until credit is added: 503, not 502.
+        yield _sse({"type": "error", "status": 503, "message": str(error)})
     except AIServiceError as error:
         yield _sse({"type": "error", "status": 502, "message": str(error)})
     except Exception:
@@ -454,6 +458,9 @@ async def _chat_events(
         yield _sse({"type": "error", "status": 503, "message": str(error)})
     except AIRateLimitError as error:
         yield _sse({"type": "error", "status": 429, "message": str(error)})
+    except AIOutOfCreditError as error:
+        # The service is unavailable to everyone until credit is added: 503, not 502.
+        yield _sse({"type": "error", "status": 503, "message": str(error)})
     except AIServiceError as error:
         yield _sse({"type": "error", "status": 502, "message": str(error)})
     except Exception:

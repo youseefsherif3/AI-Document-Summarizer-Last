@@ -111,12 +111,17 @@ def test_empty_text_is_rejected_before_any_request(fake, bad):
             "rate limit",
         ),
         (
-            APIStatusError("bad", response=httpx.Response(402, request=REQUEST), body=None),
+            APIStatusError("bad", response=httpx.Response(400, request=REQUEST), body=None),
             AIServiceError,
-            "API error: 402",
+            "API error: 400",
+        ),
+        (
+            APIStatusError("no credit", response=httpx.Response(402, request=REQUEST), body=None),
+            AIServiceError,  # AIOutOfCreditError, a subclass
+            "out of credit",
         ),
     ],
-    ids=["timeout", "connection", "rate-limit", "status"],
+    ids=["timeout", "connection", "rate-limit", "status", "out-of-credit"],
 )
 def test_provider_errors_are_mapped_like_the_summarizer(fake, usage_logs, provider_error, expected, message):
     fake.error = provider_error

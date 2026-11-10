@@ -72,6 +72,17 @@ class AIServiceError(Exception):
     """Raised when the AI provider returns an API error."""
 
 
+class AIOutOfCreditError(AIServiceError):
+    """The provider refused the call because the account has no credit left (HTTP 402).
+
+    A subclass of AIServiceError, so code that handles provider errors in general still
+    does; the API endpoints answer it with 503 and a clear message instead of 502.
+    """
+
+
+OUT_OF_CREDIT_MESSAGE = "The AI service is out of credit. Please try again later."
+
+
 class AIServiceNotConfiguredError(Exception):
     """Raised when OPENROUTER_API_KEY is not set."""
 
@@ -136,9 +147,24 @@ def map_provider_error(error: Exception) -> Exception:
         return ConnectionError("Could not connect to the AI service.")
     if isinstance(error, RateLimitError):
         return rate_limit_error(error)
+    if isinstance(error, APIStatusError) and error.status_code == 402:
+        return AIOutOfCreditError(OUT_OF_CREDIT_MESSAGE)
     if isinstance(error, APIStatusError):
         return AIServiceError(f"The AI service returned an API error: {error.status_code}")
     return error
+
+
+def _final_error(error: Exception, kind: str, model: str) -> Exception:
+    """The app's error for a provider error that is not retried, logging the causes that
+    need someone to act."""
+    mapped = map_provider_error(error)
+    if isinstance(mapped, AIOutOfCreditError):
+        logger.error(
+            "AI call refused: the OpenRouter account is out of credit (HTTP 402). "
+            "kind=%s model=%s. Add credit to the account; the call was not retried.",
+            kind, model,
+        )
+    return mapped
 
 
 def is_transient(error: Exception) -> bool:
@@ -188,7 +214,7 @@ async def call_with_retries(
         except PROVIDER_ERRORS as error:
             delay = retry_delay(error, retries)
             if delay is None:
-                raise map_provider_error(error) from error
+                raise _final_error(error, kind, model) from error
             retries += 1
             _log_retry(kind, model, retries, error, delay)
             await _sleep(delay)
@@ -224,7 +250,7 @@ async def stream_with_retries(
         except PROVIDER_ERRORS as error:
             delay = None if started else retry_delay(error, retries)
             if delay is None:
-                raise map_provider_error(error) from error
+                raise _final_error(error, kind, model) from error
             retries += 1
             _log_retry(kind, model, retries, error, delay)
         finally:

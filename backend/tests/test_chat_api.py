@@ -207,12 +207,17 @@ def test_with_no_documents_the_fixed_reply_is_sent_without_a_model_call(model):
             "The AI service rate limit has been exceeded. Please try again later.",
         ),
         (
-            APIStatusError("bad", response=httpx.Response(402, request=REQUEST), body=None),
+            APIStatusError("bad", response=httpx.Response(400, request=REQUEST), body=None),
             502,
-            "The AI service returned an API error: 402",
+            "The AI service returned an API error: 400",
+        ),
+        (
+            APIStatusError("no credit", response=httpx.Response(402, request=REQUEST), body=None),
+            503,
+            "The AI service is out of credit. Please try again later.",
         ),
     ],
-    ids=["timeout-504", "connection-503", "rate-limit-429", "provider-502"],
+    ids=["timeout-504", "connection-503", "rate-limit-429", "provider-502", "out-of-credit-503"],
 )
 def test_model_errors_become_sse_error_events(model, provider_error, status, message):
     save_document("plan.pdf", ["Some text."])
@@ -224,6 +229,27 @@ def test_model_errors_become_sse_error_events(model, provider_error, status, mes
     assert response.status_code == 200
     assert [e["type"] for e in events] == ["sources", "delta", "error"]
     assert events[-1] == {"type": "error", "status": status, "message": message}
+
+
+def test_out_of_credit_before_the_answer_starts_is_a_503_after_one_call(monkeypatch):
+    """The usual case: the provider refuses the request itself (not mid-stream)."""
+    save_document("plan.pdf", ["Some text."])
+    requests = []
+
+    async def create(**kwargs):
+        requests.append(kwargs)
+        raise APIStatusError("no credit", response=httpx.Response(402, request=REQUEST), body=None)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(chat, "_get_async_client", lambda: client)
+
+    with TestClient(main.app) as test_client:
+        response, events = ask(test_client, message="Question?")
+
+    assert response.status_code == 200
+    assert [e["type"] for e in events] == ["sources", "error"]
+    assert events[-1] == {"type": "error", "status": 503, "message": "The AI service is out of credit. Please try again later."}
+    assert len(requests) == 1  # never retried
 
 
 def test_question_embedding_failure_sends_only_an_error(model, monkeypatch):

@@ -16,7 +16,7 @@ import app.services.chat as chat
 import app.services.embeddings as embeddings
 import app.services.llm as llm
 import app.services.summarizer as summarizer
-from app.services.ai_calls import AIRateLimitError, AIServiceError
+from app.services.ai_calls import AIOutOfCreditError, AIRateLimitError, AIServiceError
 
 REQUEST = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
 
@@ -101,9 +101,11 @@ def test_services_share_one_client_and_error_types():
         (connection_error(), ConnectionError, "Could not connect"),
         (status_error(429), AIRateLimitError, "rate limit has been exceeded"),
         (status_error(500), AIServiceError, "API error: 500"),
-        (status_error(402), AIServiceError, "API error: 402"),
+        (status_error(400), AIServiceError, "API error: 400"),
+        (status_error(402), AIOutOfCreditError, "The AI service is out of credit."),
     ],
-    ids=["timeout-504", "connection-503", "rate-limit-429", "server-502", "client-502"],
+    ids=["timeout-504", "connection-503", "rate-limit-429", "server-502", "client-502",
+         "out-of-credit"],
 )
 def test_provider_errors_are_mapped(error, expected, message):
     mapped = ai_calls.map_provider_error(error)
@@ -148,7 +150,7 @@ def test_gives_up_after_two_retries_with_the_mapped_error(retry_waits, retry_log
     assert len(retry_logs()) == 2
 
 
-@pytest.mark.parametrize("code", [400, 401, 402, 404, 409, 413, 422])
+@pytest.mark.parametrize("code", [400, 401, 404, 409, 413, 422])  # 402: see below
 def test_client_errors_are_never_retried(code, retry_waits, retry_logs):
     calls = Calls([status_error(code)])
 
@@ -157,6 +159,64 @@ def test_client_errors_are_never_retried(code, retry_waits, retry_logs):
     assert calls.count == 1
     assert retry_waits == []
     assert retry_logs() == []
+
+
+# --- Out of credit (402) ------------------------------------------------------------------
+
+
+@pytest.fixture
+def error_logs(caplog):
+    caplog.set_level(logging.ERROR, logger="app.services.ai_calls")
+    return lambda: [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+
+
+def test_out_of_credit_is_a_service_error_with_a_clear_message():
+    error = ai_calls.map_provider_error(status_error(402))
+    assert isinstance(error, AIOutOfCreditError)
+    assert isinstance(error, AIServiceError)  # code handling provider errors still handles it
+    assert str(error) == "The AI service is out of credit. Please try again later."
+
+
+def test_out_of_credit_is_never_retried_and_is_logged_as_an_error(
+    retry_waits, retry_logs, error_logs
+):
+    calls = Calls([status_error(402)])
+
+    with pytest.raises(AIOutOfCreditError, match="out of credit"):
+        run(calls)
+
+    assert calls.count == 1
+    assert retry_waits == [] and retry_logs() == []
+    [logged] = error_logs()
+    assert "out of credit (HTTP 402)" in logged
+    assert "kind=test model=m" in logged
+    assert "not retried" in logged
+
+
+def test_out_of_credit_after_a_transient_error_stops_there(retry_waits, error_logs):
+    calls = Calls([status_error(503), status_error(402), status_error(503)])
+
+    with pytest.raises(AIOutOfCreditError):
+        run(calls)
+    assert calls.count == 2
+    assert len(retry_waits) == 1
+    assert len(error_logs()) == 1
+
+
+def test_a_streamed_call_out_of_credit_is_never_retried(retry_waits, error_logs):
+    opens = Opens([status_error(402), FakeStream([text_chunk("never used")])])
+
+    with pytest.raises(AIOutOfCreditError):
+        texts_from(opens)
+    assert opens.count == 1
+    assert retry_waits == []
+    assert "out of credit (HTTP 402)" in error_logs()[0]
+
+
+def test_other_errors_are_not_logged_as_out_of_credit(retry_waits, error_logs):
+    with pytest.raises(AIServiceError):
+        run(Calls([status_error(400)]))
+    assert error_logs() == []
 
 
 def test_a_client_error_after_a_transient_one_stops_the_retries(retry_waits):

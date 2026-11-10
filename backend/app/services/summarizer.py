@@ -7,6 +7,7 @@ from contextlib import aclosing
 
 from .ai_calls import (  # noqa: F401  (re-exported: the app imports the errors from here)
     OPENROUTER_BASE_URL,
+    AIOutOfCreditError,
     AIRateLimitError,
     AIServiceError,
     AIServiceNotConfiguredError,

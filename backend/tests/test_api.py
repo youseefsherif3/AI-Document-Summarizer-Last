@@ -80,10 +80,12 @@ def _sse_events(body: str) -> list[dict]:
          "The AI service took too long to respond."),
         (ConnectionError("Could not connect to the AI service."), 503,
          "Could not connect to the AI service."),
-        (main.AIServiceError("The AI service returned an API error: 402"), 502,
-         "The AI service returned an API error: 402"),
+        (main.AIServiceError("The AI service returned an API error: 400"), 502,
+         "The AI service returned an API error: 400"),
+        (main.AIOutOfCreditError("The AI service is out of credit. Please try again later."), 503,
+         "The AI service is out of credit. Please try again later."),
     ],
-    ids=["timeout-504", "connection-503", "provider-error-502"],
+    ids=["timeout-504", "connection-503", "provider-error-502", "out-of-credit-503"],
 )
 def test_stream_upload_maps_ai_errors_without_saving_document(
     monkeypatch, error, status, message
