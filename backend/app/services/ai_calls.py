@@ -6,8 +6,8 @@ the client from `_get_async_client()` and sends it through `call_with_retries` o
 
 - The SDK's own retries are off (`max_retries=0`); all retries happen here and are logged.
 - Transient errors are retried up to MAX_RETRIES times with exponential backoff and
-  jitter: timeouts, connection errors, 429 and 5xx. Other 4xx errors (bad input, no
-  credits, auth) are never retried.
+  jitter: timeouts (including 408 Request Timeout), connection errors, 429 and 5xx.
+  Other 4xx errors (bad input, no credits, auth, 409) are never retried.
 - A provider's suggested wait (`Retry-After`) is honored. If it is longer than
   MAX_RETRY_AFTER_SECONDS, the call is not retried and the rate-limit error is raised
   with `retry_after`, so the caller can decide (the eval runner waits; chat fails).
@@ -142,11 +142,12 @@ def map_provider_error(error: Exception) -> Exception:
 
 
 def is_transient(error: Exception) -> bool:
-    """Timeouts, connection errors, 429 and 5xx. Other 4xx errors are not transient."""
+    """Timeouts (including 408), connection errors, 429 and 5xx. Other 4xx errors (409
+    included) are not transient."""
     if isinstance(error, APIConnectionError):  # includes APITimeoutError
         return True
     if isinstance(error, APIStatusError):
-        return error.status_code == 429 or error.status_code >= 500
+        return error.status_code in (408, 429) or error.status_code >= 500
     return False
 
 

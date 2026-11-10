@@ -132,9 +132,9 @@ the **Chat** page.
   those citations as buttons linked to a sources list (file, page, snippet). Answers come only
   from the documents; if the answer isn't there, it says so.
 - **AI calls:** every call to OpenRouter (summary, chat, embeddings) goes through
-  `backend/app/services/ai_calls.py`. Timeouts, connection errors, rate limits (429) and
-  provider errors (5xx) are retried up to 2 times with backoff, honoring `Retry-After`; each
-  retry logs an `ai_retry` line. A streamed answer is never retried once text has been sent.
+  `backend/app/services/ai_calls.py`. Timeouts (including 408), connection errors, rate
+  limits (429) and provider errors (5xx) are retried up to 2 times with backoff, honoring
+  `Retry-After`; each retry logs an `ai_retry` line. A streamed answer is never retried once text has been sent.
 
 ## Tests
 

@@ -122,8 +122,9 @@ def test_rate_limit_error_keeps_retry_after_and_detail():
 
 @pytest.mark.parametrize(
     "error",
-    [timeout_error(), connection_error(), status_error(429), status_error(500), status_error(503)],
-    ids=["timeout", "connection", "429", "500", "503"],
+    [timeout_error(), connection_error(), status_error(408), status_error(429),
+     status_error(500), status_error(503)],
+    ids=["timeout", "connection", "408", "429", "500", "503"],
 )
 def test_transient_errors_are_retried_then_succeed(error, retry_waits, retry_logs):
     calls = Calls([error, error])
@@ -147,7 +148,7 @@ def test_gives_up_after_two_retries_with_the_mapped_error(retry_waits, retry_log
     assert len(retry_logs()) == 2
 
 
-@pytest.mark.parametrize("code", [400, 401, 402, 404, 413, 422])
+@pytest.mark.parametrize("code", [400, 401, 402, 404, 409, 413, 422])
 def test_client_errors_are_never_retried(code, retry_waits, retry_logs):
     calls = Calls([status_error(code)])
 
@@ -322,6 +323,21 @@ def test_stream_gives_up_after_two_retries(retry_waits):
     with pytest.raises(TimeoutError):
         texts_from(opens)
     assert opens.count == 3
+
+
+def test_a_408_after_giving_up_is_mapped_to_a_service_error(retry_waits):
+    calls = Calls([status_error(408)] * 3)
+
+    with pytest.raises(AIServiceError, match="API error: 408"):
+        run(calls)
+    assert calls.count == 3
+
+
+def test_stream_is_retried_on_408_before_the_first_token(retry_waits):
+    opens = Opens([status_error(408), FakeStream([text_chunk("Hello")])])
+
+    assert texts_from(opens) == ["Hello"]
+    assert opens.count == 2
 
 
 def test_stream_client_errors_are_not_retried(retry_waits):
