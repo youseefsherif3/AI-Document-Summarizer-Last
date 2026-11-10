@@ -4,7 +4,6 @@ import {
   FileType,
   Trash2,
   Eye,
-  LoaderCircle,
   X,
 } from "lucide-react";
 
