@@ -57,3 +57,6 @@ backend/evals/.cache/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local dev-server config for Claude Code previews
+.claude/launch.json
