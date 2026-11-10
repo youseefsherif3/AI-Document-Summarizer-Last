@@ -141,6 +141,49 @@ def test_auth_tables_migration_adds_four_tables_and_downgrades_to_the_exact_base
     )
 
 
+def test_document_owner_migration_adds_the_column_and_index_and_downgrades_cleanly(
+    scratch_database,
+):
+    url = scratch_database()
+    config = alembic_config(url)
+    command.upgrade(config, "0002_auth_tables")
+    before = schema_check.snapshot_of(url)
+
+    command.upgrade(config, "0003_document_owner")
+    documents = schema_check.snapshot_of(url)["tables"]["documents"]
+    assert documents["columns"]["owner_user_id"] == {
+        "default": None, "generated": None, "not_null": False, "type": "integer",
+    }
+    assert documents["constraints"]["documents_owner_user_id_fkey"] == (
+        "FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE"
+    )
+    assert documents["indexes"]["ix_documents_owner_created"].endswith(
+        "USING btree (owner_user_id, created_at DESC, id DESC)"
+    )
+
+    command.downgrade(config, "0002_auth_tables")
+    after = schema_check.snapshot_of(url)
+    assert after == before, explain(before, after)
+
+
+def test_existing_documents_have_no_owner_after_the_migration(scratch_database):
+    url = scratch_database()
+    config = alembic_config(url)
+    command.upgrade(config, "0002_auth_tables")
+    engine = create_engine(database.sqlalchemy_url(url))
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO documents (filename, file_type, file_size, file_content, extracted_text) "
+            "VALUES ('old.txt', '.txt', 4, 'text', 'text')"
+        ))
+
+    command.upgrade(config, "0003_document_owner")
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT owner_user_id FROM documents")).scalar_one() is None
+    engine.dispose()
+
+
 def test_stamping_an_existing_database_changes_nothing(scratch_database, monkeypatch, capsys):
     url = scratch_database()
     build_with_old_startup_code(url, monkeypatch)
