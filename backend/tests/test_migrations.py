@@ -120,6 +120,27 @@ def test_upgrade_downgrade_upgrade_on_an_empty_database(scratch_database):
     assert schema_check.snapshot_of(url) == at_head, explain(at_head, schema_check.snapshot_of(url))
 
 
+def test_auth_tables_migration_adds_four_tables_and_downgrades_to_the_exact_baseline(
+    scratch_database,
+):
+    url = scratch_database()
+    config = alembic_config(url)
+    command.upgrade(config, "0002_auth_tables")
+
+    tables = schema_check.snapshot_of(url)["tables"]
+    assert set(tables) == {"documents", "chunks", "users", "sessions", "login_attempts", "daily_usage"}
+    # The existing tables are untouched by this migration.
+    reference = schema_check.expected_snapshot("0001_baseline")["tables"]
+    assert tables["documents"] == reference["documents"]
+    assert tables["chunks"] == reference["chunks"]
+
+    command.downgrade(config, "0001_baseline")
+    after = schema_check.snapshot_of(url)
+    assert after == schema_check.expected_snapshot("0001_baseline"), explain(
+        schema_check.expected_snapshot("0001_baseline"), after
+    )
+
+
 def test_stamping_an_existing_database_changes_nothing(scratch_database, monkeypatch, capsys):
     url = scratch_database()
     build_with_old_startup_code(url, monkeypatch)

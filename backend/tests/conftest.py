@@ -117,4 +117,7 @@ def fake_query_embedding(monkeypatch):
 @pytest.fixture(autouse=True)
 def clean_database(test_database):
     with database.get_connection() as connection:
-        connection.execute(text("TRUNCATE TABLE documents RESTART IDENTITY CASCADE"))
+        # CASCADE also empties chunks (via documents) and sessions and daily_usage (via users).
+        connection.execute(text(
+            "TRUNCATE TABLE documents, users, login_attempts RESTART IDENTITY CASCADE"
+        ))
