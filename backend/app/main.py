@@ -15,6 +15,7 @@ from sqlalchemy import text
 from pydantic import BaseModel, Field
 from vercel import blob
 
+from . import auth
 from .extraction import extract_pages, join_pages
 from .database import (
     check_database,
@@ -72,6 +73,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Re-sends the session cookie when a visit renewed the session (also on streamed responses).
+app.add_middleware(auth.SessionCookieMiddleware)
+app.include_router(auth.router)
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
