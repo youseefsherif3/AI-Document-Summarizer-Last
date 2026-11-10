@@ -1,3 +1,4 @@
+import { apiUrl } from "@/lib/api";
 import { readSseEvents } from "@/lib/sse";
 import type { ChatMessageRole, ChatSource } from "@/types/chat";
 
@@ -51,15 +52,9 @@ export async function streamChatAnswer(
   { message, history, documentIds, signal }: ChatStreamRequest,
   { onSources, onDelta }: ChatStreamHandlers,
 ): Promise<void> {
-  // Must be written out literally: Next.js inlines it into the browser bundle at build time.
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (!apiUrl) {
-    throw new ChatRequestError("Backend API URL is not configured.");
-  }
-
   let response: Response;
   try {
-    response = await fetch(`${apiUrl}/chat/stream`, {
+    response = await fetch(apiUrl("/chat/stream"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

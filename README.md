@@ -93,7 +93,8 @@ The API runs on http://localhost:8000. http://localhost:8000/health should retur
 ### 4. Configure and start the frontend
 
 In a second terminal, in the project root, copy `.env.example` to `.env.local` (the file name
-starts with a dot). It sets `NEXT_PUBLIC_API_URL=http://localhost:8000`.
+starts with a dot). It sets `BACKEND_URL=http://127.0.0.1:8000`: the browser calls this app's
+own `/api/*`, and Next.js forwards those requests to the backend.
 
 On Windows:
 
@@ -227,7 +228,7 @@ Frontend project:
 
 | Variable | Value |
 |---|---|
-| `NEXT_PUBLIC_API_URL` | the backend's URL, for example `https://your-api.vercel.app` (public; read at build time, so redeploy after changing it) |
+| `BACKEND_URL` | the backend's URL, for example `https://your-api.vercel.app`. Server-only: `/api/*` on the frontend is forwarded there, so the browser never calls the backend directly. Read at build time, so redeploy after changing it; a Vercel build without it fails. |
 | `NEXT_PUBLIC_VERCEL_BLOB_UPLOADS` | `true` |
 | `BLOB_READ_WRITE_TOKEN` | added by connecting the Blob store (secret) |
 
@@ -277,8 +278,8 @@ The backend disables server-side prepared statements, so Neon's pooled connectio
 2. Create the private Blob store.
 3. Create the backend project (root `backend`), connect the Blob store, set its variables with
    `CORS_ORIGINS` left for later, and deploy. Check `https://your-api.vercel.app/health`.
-4. Create the frontend project (repo root), connect the Blob store, set `NEXT_PUBLIC_API_URL`
-   to the backend's URL and `NEXT_PUBLIC_VERCEL_BLOB_UPLOADS=true`, and deploy.
+4. Create the frontend project (repo root), connect the Blob store, set `BACKEND_URL` to the
+   backend's URL and `NEXT_PUBLIC_VERCEL_BLOB_UPLOADS=true`, and deploy.
 5. Set the backend's `CORS_ORIGINS` to the frontend's URL and redeploy the backend.
 6. Check in the browser: upload a small TXT and a PDF over 4.5 MB, ask a question on the Chat
    page and get an answer with citations, delete a document. The backend's Vercel logs show one

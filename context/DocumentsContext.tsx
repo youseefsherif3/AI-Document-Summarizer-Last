@@ -12,6 +12,7 @@ import {
 
 import type { UploadedDocument, DocumentType } from "@/types/document";
 import { upload as uploadBlob } from "@vercel/blob/client";
+import { apiUrl } from "@/lib/api";
 
 import {
   ALLOWED_EXTENSIONS,
@@ -69,9 +70,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     }));
 
   const refreshDocuments = async () => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-    if (!apiUrl) throw new Error("Backend API URL is not configured.");
-    const response = await fetch(`${apiUrl}/documents`, { cache: "no-store" });
+    const response = await fetch(apiUrl("/documents"), { cache: "no-store" });
     if (!response.ok) throw new Error("Failed to retrieve saved documents.");
     const saved = mapBackendDocuments(await response.json());
     // Keep uploads that are still running; they are not in the database yet.
@@ -84,13 +83,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
 
     const fetchDocuments = async () => {
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-
-        if (!apiUrl) {
-          throw new Error("Backend API URL is not configured.");
-        }
-
-        const response = await fetch(`${apiUrl}/documents`);
+        const response = await fetch(apiUrl("/documents"));
 
         if (!response.ok) {
           throw new Error("Failed to retrieve saved documents.");
@@ -138,12 +131,6 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     });
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-
-      if (!apiUrl) {
-        throw new Error("Backend API URL is not configured.");
-      }
-
       if (!document.file) {
         throw new Error("Original file is not available.");
       }
@@ -167,7 +154,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
           },
         );
         updateDocument(document.id, { progress: 50 });
-        response = await fetch(`${apiUrl}/documents/upload/stream/blob`, {
+        response = await fetch(apiUrl("/documents/upload/stream/blob"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -180,7 +167,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
       } else {
         const formData = new FormData();
         formData.append("file", document.file);
-        response = await fetch(`${apiUrl}/documents/upload/stream`, {
+        response = await fetch(apiUrl("/documents/upload/stream"), {
           method: "POST",
           body: formData,
           signal: controller.signal,
@@ -346,14 +333,8 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-
-      if (!apiUrl) {
-        throw new Error("Backend API URL is not configured.");
-      }
-
       const response = await fetch(
-        `${apiUrl}/documents/${document.backendId}`,
+        apiUrl(`/documents/${document.backendId}`),
         {
           method: "DELETE",
         },

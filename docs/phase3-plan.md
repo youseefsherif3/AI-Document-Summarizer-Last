@@ -131,6 +131,22 @@ Per-user data isolation, job ownership and per-user usage all depend on authenti
 
 A or B are the realistic choices; C and D are listed only to record why they are not used.
 
+**Decided: option A** (no custom domain). The browser calls only the frontend's own `/api/*`; `next.config.ts` rewrites it to the backend Vercel URL (`BACKEND_URL`, server-only, read at build time).
+
+**Spike result (2026-11-10, throwaway branch `phase3/step-2-spike`, not merged):** free test endpoints sent timed SSE events (one every 200 ms) through the rewrite. No AI calls were made.
+
+| Check | Local `next dev` | Local `next build` + `start` | Vercel previews |
+|---|---|---|---|
+| 30 events via `/api` | 201–217 ms apart (direct: 201–216) | 201–216 ms apart, no compression | 183–263 ms apart, none bunched (direct: 191–206) |
+| 2-minute stream (600 events) | — | complete, largest gap 283 ms | complete in 121 s, largest gap 281 ms |
+| `httpOnly` `Secure` cookie from the backend | stored on the frontend domain, hidden from JS, sent back | — | same |
+| `Origin` reaching the backend | unchanged | — | unchanged (the frontend preview URL) |
+| Client IP | not set locally | — | `X-Forwarded-For`, `X-Real-IP` and `X-Vercel-Forwarded-For` = the real IP; forged values are overwritten by Vercel |
+| Request body | 10 MB multipart intact | — | 1 MB intact (Vercel's 4.5 MB function limit still applies, so production keeps using Blob) |
+| `app/api/document-uploads` | still served by Next.js | — | still served by Next.js |
+
+Conclusions: chat keeps streaming token by token through the rewrite, so the fallbacks aren't needed. Rate limiting reads the client IP from `X-Vercel-Forwarded-For` (falling back to the socket address locally). The paid end-to-end check (a real upload and chat question) is done in the preview rehearsal before production.
+
 **Known gap: password reset by email is out of scope for now.** There is no email sending, so a forgotten password cannot be reset by the user; an admin resets it manually (a documented command) until reset by email is added. Email verification on sign-up is out of scope for the same reason.
 
 **Existing data:** documents uploaded before auth have no owner. Decide in Step 2: delete them, or assign them to one account. (Production currently holds only test documents.)
@@ -411,7 +427,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 
 ### Decisions
 - [x] Authentication approach chosen (§4.1): own email + password, `httpOnly` `Secure` cookie session.
-- [ ] Cross-domain cookie option chosen (§4.1: A proxy or B custom domain), at the start of Step 2.
+- [x] Cross-domain cookie option chosen (§4.1): A, the `/api` rewrite, confirmed by the spike.
 - [ ] Handling of existing documents without an owner decided.
 - [x] Upload experience without live summary streaming accepted (§4.3); chat streaming unchanged.
 - [x] Production hosting for Redis and the worker chosen (§4.2): Azure Container Apps + Azure Managed Redis.

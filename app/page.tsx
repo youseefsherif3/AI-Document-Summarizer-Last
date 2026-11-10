@@ -6,15 +6,13 @@ import WelcomeSection from "@/components/dashboard/WelcomeSection";
 import StatsCards from "@/components/dashboard/StatsCards";
 import RecentActivity from "@/components/dashboard/RecentActivity";
 import type { DashboardData } from "@/types/dashboard";
-
-// Inlined at build time, so it can't change while the page is open.
-const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+import { apiUrl } from "@/lib/api";
 
 type DashboardResult = { data: DashboardData } | { error: string };
 
-async function loadDashboard(url: string): Promise<DashboardResult> {
+async function loadDashboard(): Promise<DashboardResult> {
   try {
-    const response = await fetch(`${url}/dashboard`, { cache: "no-store" });
+    const response = await fetch(apiUrl("/dashboard"), { cache: "no-store" });
     if (!response.ok) throw new Error("Could not load dashboard data.");
     return { data: await response.json() };
   } catch (reason) {
@@ -24,17 +22,13 @@ async function loadDashboard(url: string): Promise<DashboardResult> {
 
 export default function Home() {
   const [data, setData] = useState<DashboardData | null>(null);
-  // Without an API URL there is nothing to load: start with the error instead.
-  const [loading, setLoading] = useState(Boolean(apiUrl));
-  const [error, setError] = useState<string | null>(
-    apiUrl ? null : "Backend API URL is not configured.",
-  );
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // State is only updated once the request has finished, never synchronously in the effect.
   // On an error the last loaded data stays on screen, as before.
   const refresh = useCallback(() => {
-    if (!apiUrl) return;
-    void loadDashboard(apiUrl).then((result) => {
+    void loadDashboard().then((result) => {
       if ("data" in result) {
         setData(result.data);
         setError(null);
