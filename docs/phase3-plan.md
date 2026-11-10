@@ -1,0 +1,446 @@
+# DocuMind — Phase 3 Implementation Plan
+
+**Production Readiness & Observability**
+**Document purpose:** Scope definition and implementation plan for review
+**Project:** DocuMind — AI Document Summarizer & Chat with your Docs (RAG)
+**Date:** November 2026
+**Revision:** 3 (updated after the Step 1 architecture audit of `main` at `fa292bf`)
+
+> **Important:** This document describes the agreed target implementation. It does not mean that the listed components have already been implemented.
+
+## How to Use This Document
+
+Review the scope and project decisions first. Once approved, implement the work incrementally, one step at a time, with one commit per step and the diff reviewed before each commit. Update the checklist based on actual implementation and test results, not merely because a topic has been discussed.
+
+Read `CLAUDE.md` and `docs/design.md` (Phase 2) before starting. This plan builds on them and does not replace them.
+
+---
+
+## 1. Phase 3 Reference and Requirements
+
+The goal of Phase 3 is to operate AI systems reliably, cost-effectively, and securely under real-world traffic. The development plan identifies the following areas:
+
+- **System Design:** REST and gRPC APIs, queues such as Redis, Kafka, and SQS, caching, database design and indexing, and horizontal scaling.
+- **LLM Production Concerns:** prompt caching, batching, cost tracking per request, fallback models, rate-limit handling, and latency budgets.
+- **Reliability:** retries with backoff, idempotency, circuit breakers, and graceful degradation when a model fails.
+- **Observability:** structured logs, tracing with OpenTelemetry, LLM tracing tools such as Langfuse and LangSmith, and dashboards for cost and quality.
+- **Security:** prompt injection, PII handling, secrets management, and least privilege for agents.
+- **Infrastructure:** Docker, CI/CD with GitHub Actions, in-depth knowledge of one cloud provider, and Kubernetes basics.
+- **Production project:** take the Phase 2 application to production shape with **background workers, queue-based ingestion, caching, monitoring, and load testing**.
+
+> **Scope note:** The plan identifies learning and implementation areas; it does not require using every available technology or deploying the application on Kubernetes. Technology choices should serve DocuMind's actual needs.
+
+---
+
+## 2. Current State (Phase 2 Baseline)
+
+Phase 3 builds on a working, deployed application. The following already exists and must be **extended, not rewritten**:
+
+| Area | Current state |
+|---|---|
+| Frontend | Next.js 16 + TypeScript, deployed on Vercel. Dashboard, Documents and Chat pages; responsive layout. |
+| Backend | FastAPI, deployed on Vercel as serverless functions (300 s limit). |
+| Database | PostgreSQL + pgvector: Docker locally (`docsum`, `docsum_test`, `docsum_eval`), Neon in production via the pooled connection string. |
+| File uploads | Vercel Blob in production (to bypass Vercel's 4.5 MB request limit); direct multipart locally. |
+| Upload flow | One streaming request: extract pages → chunk → summary (streamed to the user over SSE) in parallel with embeddings → save document + chunks in **one transaction** (all or nothing). |
+| Chat | `POST /chat/stream` over SSE: hybrid search (vector + full-text, RRF) → top 8 chunks → cited answer. Optional query rewriting (off by default). |
+| Upload limit | **3 files uploading at the same time**, enforced **only in the browser** (`MAX_CONCURRENT_UPLOADS` in `lib/constants.ts`, per tab). The backend has no limit. Duplicate detection (same name and size) is also browser-only. Stored documents are unlimited. |
+| Cost tracking | One `ai_usage` log line per AI call: kind, model, outcome, prompt/completion/total tokens, `cost_usd`, `cost_source`, `duration_ms`. Cost comes from OpenRouter's returned `usage.cost`; when it is missing, an optional price table (`AI_PRICES_PER_MILLION_TOKENS`) estimates it and `cost_source` says `estimate` or `unknown`. The line is `key=value` text, **not JSON**, and is not stored in the database. |
+| Error handling | Provider errors mapped to 504 / 503 / 429 / 502; missing key → 503. The mapping is **copied in four places** (`summarizer.py`, `embeddings.py`, `llm.py`, `chat.py`). **Two places swallow errors:** `_delete_temporary_blob` in `main.py` (`except Exception: pass`) and the `catch {}` in `app/api/document-uploads/route.ts` (returns 400 without logging). |
+| Retries | The eval runner retries 429s with backoff and resumes. The app has no retry logic of its own, **but the OpenAI SDK retries silently**: `max_retries` is never set, so each call can make up to 3 attempts (60 s timeout each), and the logged `duration_ms` includes them with no retry count. `Retry-After` is kept only by `llm.py` and `chat.py` (`rate_limit_error()`); `summarizer.py` and `embeddings.py` drop it. |
+| Prompt injection | Sources wrapped in `<source>` tags with tag-breaking neutralised; system prompt treats sources as data. Covered by eval questions. |
+| Tests | 429 backend tests (pytest, all AI calls mocked) on real Postgres + pgvector, all passing; `tsc` and build pass. **`npm run lint` fails** (1 error in `app/page.tsx`, `react-hooks/set-state-in-effect`; 1 warning, unused `LoaderCircle` in `FileCard.tsx`). |
+| Evals | 66 questions over 9 synthetic documents; retrieval mode is near-free thanks to an embedding cache. |
+| Schema changes | `initialize_database()` runs on every startup (every Vercel cold start): `CREATE EXTENSION vector`, `create_all`, a manual `ALTER` for `documents.summary`, the embedding-dimension check, and `ADD COLUMN IF NOT EXISTS content_tsv` + GIN index. It needs rights to create extensions. **No migration tool yet.** |
+| Stored data | `documents` stores the raw file bytes (`file_content`, never read) and the full `extracted_text`. This grows Neon storage, but makes re-indexing possible without the original file. |
+| Documents before RAG | Documents uploaded before Phase 2 have summaries but **no chunks**, so chat cannot find them. The backfill script (Phase 2 step 9) was moved to Phase 3 and is now Step 4b below. |
+| Endpoints | `GET /`, `GET /health`, `GET /documents` (all rows with full summaries, no paging), `GET /dashboard` (loads all rows; `processing_documents` hard-coded to 0), `POST /documents/upload/stream`, `POST /documents/upload/stream/blob`, `POST /chat/stream`, `DELETE /documents/{id}`. There is no `GET /documents/{id}` yet. |
+| Indexes | `documents`: primary key only (no index on `created_at`). `chunks`: unique (`document_id`, `chunk_index`), btree on `document_id`, HNSW on `embedding`, GIN on `content_tsv`. |
+| Process-wide singletons | One cached `AsyncOpenAI` client (`summarizer._get_async_client`, `@cache`) and one SQLAlchemy engine per process (default pool 5 + 10 overflow). Most model settings are read once at import; there is no central settings module. |
+| Infrastructure | `docker-compose.yml` has Postgres only. No Dockerfile, no `.github/workflows`. |
+| Docs drift | README says 56 eval questions and describes chat as vector-only; CLAUDE.md says `summarizer.py` is the only place that calls OpenRouter (four service files do, all inside `services/`); `OPENROUTER_CHAT_MODEL` and `RETRIEVAL_MIN_SIMILARITY` are missing from `backend/.env.example`. |
+| Auth | **None.** All visitors share one database. Document IDs are sequential integers. |
+| Git | All Phase 2 branches are merged into `main`. Production is expected to deploy from `main` (Vercel default; confirm in each project's Git settings). |
+
+---
+
+## 3. Agreed Project Decisions
+
+| Area | Agreed choice / direction |
+|---|---|
+| Frontend | Next.js + TypeScript (unchanged) |
+| Backend API | FastAPI (Python) on Vercel (unchanged) |
+| Database | PostgreSQL + pgvector: Docker locally, Neon in production (unchanged) |
+| Migrations | **Alembic** (new) |
+| Authentication | **To be chosen in Step 2** (see §4.1) |
+| Queue / background jobs | Redis + Celery |
+| Cache | Redis, logically separate from the queue (separate key prefixes or DB numbers) |
+| Worker + Redis hosting (production) | **Decided:** Celery worker on **Azure Container Apps**, Redis on **Azure Managed Redis** (see §4.2). Frontend, API, Neon and Vercel Blob stay as they are. |
+| LLM observability | Langfuse |
+| Tracing | OpenTelemetry |
+| Testing | Pytest + Locust (with a fake LLM mode) |
+| CI/CD | GitHub Actions |
+| Cloud | Azure fundamentals are intentionally skipped because the user already knows Azure. Azure hosts the Celery worker (Container Apps) and Redis (Azure Managed Redis); the rest stays where it is. |
+
+### Constraints
+
+- **Existing code changes only when Phase 3 requires it.** Working Phase 2 code is extended, not rewritten or refactored for its own sake. Each change to existing code must name the Phase 3 requirement or risk (§13) it serves. There are two approved exceptions where existing code is deliberately reworked:
+  1. **The upload flow moves to the job queue**, both the frontend (`context/DocumentsContext.tsx`: the SSE stream reader is replaced by job creation and status polling) and the backend (`POST /documents/upload/stream` and `/documents/upload/stream/blob` become a `202` upload that enqueues a job).
+  2. **Every query is scoped by owner**, including chat search (`search_chunks`, `full_text_search_chunks`, `existing_document_ids`), `GET /documents`, `/dashboard` and `DELETE /documents/{id}`.
+
+  Step 0 (§9) is preparation that Phase 3 requires; it changes no user-visible behavior.
+- **Upload limit:** a user can have at most **3 files uploading at the same time**. Stored documents are unlimited. Do not reintroduce a limit on stored documents.
+- Do not replace Neon, PostgreSQL, pgvector, Next.js or FastAPI, or rewrite working parts of the application, without a clear technical reason.
+- **Chat stays synchronous.** `POST /chat/stream` keeps streaming over SSE; it is not moved into the queue.
+- Keep the Phase 2 rule: a document is saved only with its chunks, never half-indexed.
+- Do not repeat Azure fundamentals or force a migration of the whole project to Azure.
+- Kubernetes basics are part of the learning scope; running DocuMind on Kubernetes is not required.
+- Redis + Celery is the starting point. Kafka, SQS and gRPC are not needed merely because they appear in the development plan.
+- **No paid load tests without approval.** Load tests run against a fake LLM by default (§6.3).
+- Every paid AI run (evals, load tests, real smoke tests) shows an estimate first and waits for approval, as in Phase 2.
+- No silent fallbacks in AI code: every fallback is logged, and in evals it stops the run.
+
+---
+
+## 4. Decisions Required Before Implementation
+
+### 4.1 Authentication (decide in Step 2)
+
+Per-user data isolation, job ownership and per-user usage all depend on authentication, so it must exist before them.
+
+| Option | Pros | Cons |
+|---|---|---|
+| **Auth.js (NextAuth)** with a GitHub/Google provider, JWT verified by FastAPI | Free, common with Next.js, no extra service | Some setup to share and verify the token in FastAPI |
+| **Clerk** | Fast setup, hosted UI, simple JWT verification | External dependency; free tier limits |
+| Own email + password with JWT | Full control | Most work; password storage and reset are easy to get wrong |
+
+Whichever is chosen, FastAPI verifies the token on every request and derives `user_id` from it.
+
+**Existing data:** documents uploaded before auth have no owner. Decide in Step 2: delete them, or assign them to one account. (Production currently holds only test documents.)
+
+### 4.2 Production hosting for Redis and the worker (decided)
+
+Vercel functions stop after each response (at most 300 s on Hobby, 800 s on Pro), with no persistent processes and no built-in Redis, so **a Celery worker cannot run on Vercel**. Enqueuing from the API is fine there (one Redis write per request).
+
+**Decision:**
+
+| Component | Hosting |
+|---|---|
+| Frontend (Next.js) | Vercel, unchanged |
+| API (FastAPI) | Vercel, unchanged. Moving it to Azure Container Apps is a **possible later step**, not part of this plan |
+| Database | Neon Postgres + pgvector, unchanged |
+| File storage | Vercel Blob, unchanged. The worker reads it with `BLOB_READ_WRITE_TOKEN` |
+| Celery worker | **Azure Container Apps**: an app with no ingress, image in Azure Container Registry, scaled on queue length with KEDA's Redis scaler (scale to zero if idle cost matters) |
+| Redis (queue + cache) | **Azure Managed Redis**, over TLS (`rediss://`). Queue and cache kept logically separate. (Microsoft is retiring Azure Cache for Redis in favor of Azure Managed Redis.) |
+
+Secrets live in Container Apps secrets or Key Vault references; the registry is pulled with a managed identity; GitHub Actions deploys with Azure OIDC (a federated credential), with no long-lived keys. Every worker transaction crosses the internet to Neon, so the Azure region should be close to the Neon region.
+
+**Azure details still needed from the user (before Step 9):**
+
+- [ ] Subscription and resource group names
+- [ ] Azure region (close to the Neon project's region; also needed: the Neon region)
+- [ ] Monthly budget, and whether idle cost matters (worker scale-to-zero, Redis tier)
+- [ ] Who can create the GitHub OIDC federated credential, and with which role scope
+- [ ] Registry: a new Azure Container Registry, or an existing one
+- [ ] Confirmation that Vercel Blob stays (moving files to Azure Blob would change the frontend upload path)
+
+### 4.3 Upload experience
+
+Moving ingestion to a worker means the summary is **no longer streamed live during upload**. The frontend shows job status (`pending` → `processing` → `completed` / `failed`) by polling, then shows the summary. Confirm this is acceptable before Step 4. (Streaming from the worker via Redis pub/sub or SSE is possible later but out of scope for now.)
+
+---
+
+## 5. Implementation Scope by Phase 3 Area
+
+### 5.1 System Design
+
+- Organize REST endpoints for documents, jobs, chat and analytics.
+- Add a queue so document processing runs in workers instead of keeping the HTTP request open.
+- Use Redis for queueing and caching, keeping the two responsibilities logically separate.
+- Introduce **Alembic** and move schema changes (including the existing full-text column) into migrations.
+- Review models, relationships, constraints and indexes based on actual query patterns, including the new ownership filters (`owner_user_id` must be indexed and part of every user-scoped query).
+- Account for connection pooling and Neon's connection limits, now that workers also open connections. Keep the existing pooler safeguard (`prepare_threshold=None`).
+- Keep the API and workers stateless so multiple instances can run, sharing only Postgres and Redis.
+
+**Not required:** gRPC. REST + SSE is sufficient for DocuMind.
+
+### 5.2 LLM Production Concerns
+
+- **Extend** the existing `ai_usage` logging: add `user_id`, `request_id`, `feature`, `provider`, `retry_count` and `fallback_used`, and persist each record to an `llm_usage` table (logs alone are not queryable for dashboards).
+- **Cost:** keep using OpenRouter's returned `usage.cost` as the source of truth. A configurable price table is only a fallback when cost is missing, with `cost_source` recorded.
+- **Prompt caching:** the provider applies automatic prompt caching for long repeated prefixes. Keep the system prompt and stable content at the start of the prompt so it can be cached, and record cached-token counts when returned. This is distinct from the Redis cache.
+- **Batching:** embeddings are already batched (64 per request). Look for other compatible workloads; do not batch latency-sensitive chat calls.
+- **Fallback models:** define a primary and a fallback model per feature. Fall back only on transient provider failures (timeouts, 5xx, repeated 429), never on 4xx input errors. Record the reason.
+- **Rate limits in the app:** honor `Retry-After`, use exponential backoff with jitter and a maximum retry count. Reuse the approach already proven in the eval runner.
+- **Latency budgets:** define budgets for time-to-first-token in chat, job pickup time, and total ingestion time; measure P50/P95/P99.
+
+### 5.3 Reliability
+
+- Retry transient errors only, with backoff (in the app and in Celery tasks).
+- **Idempotency:** a document is identified per user by a content hash; re-uploading the same file, or a task being delivered twice, must not create duplicate documents, chunks or charges.
+- **Circuit breaker** for repeated provider failures (Closed → Open → Half-open). While open, fail fast with a clear message instead of waiting on timeouts.
+- **Graceful degradation:** when the AI service is down, users can still list, open and delete documents and read existing summaries; new uploads are queued or fail clearly; chat shows a clear "AI unavailable" message.
+- **Job states:** `pending`, `processing`, `completed`, `failed`, with attempts, a safe error code and timestamps.
+- **Atomic ingestion:** the worker saves the document, summary and chunks in one transaction, as in Phase 2.
+
+### 5.4 Observability
+
+- Structured JSON logs with `request_id`, `user_id`, `job_id` and `document_id` where relevant. The existing `ai_usage` line becomes one of these.
+- OpenTelemetry tracing across FastAPI → Redis queue → Celery worker → LLM/embedding calls → Postgres, with the trace context passed through the task.
+- Langfuse traces for LLM generations: model, tokens, latency, cost, and links to retrieval (which chunks were used).
+- **Quality signals:** feed the Phase 2 eval results into the same dashboards where practical (e.g. retrieval hit@k per release).
+- An internal dashboard for cost, quality and performance (Langfuse plus a metrics backend), with time filters and defined metrics.
+- Never log API keys, passwords, tokens, or full document contents by default.
+
+### 5.5 Security
+
+- Keep the existing prompt-injection defenses and their eval questions; add any new defenses with eval coverage.
+- **Authentication, authorization and data isolation:** every document, chunk, job, usage record and chat search is scoped to the authenticated user in backend logic **and** in database queries (including the vector and full-text search).
+- PII minimization: no document text or user content in logs or traces by default; redact where needed.
+- Secrets in environment configuration (Vercel, worker host) or a secrets manager, never in code or the repo.
+- Least privilege: the worker, API and CI each get only the credentials they need (e.g. separate database roles if practical, scoped Blob tokens).
+- Existing known issues to address: Blob upload authorization (currently checks only Origin/Host) and orphaned blobs.
+
+### 5.6 Infrastructure
+
+- Docker Compose for local development: Postgres + pgvector (existing), Redis, the Celery worker.
+- A Dockerfile for the worker (and the API if needed outside Vercel).
+- **GitHub Actions** on every push and pull request:
+  - backend tests with a `pgvector/pgvector` service container and Redis,
+  - frontend `tsc`, lint and build,
+  - Alembic migrations applied to a fresh database,
+  - the Phase 2 **retrieval eval** as a regression gate (near-free with the embedding cache; requires an API key secret; can be limited to `main`).
+- Separate development and production configuration.
+- Kubernetes: learn the basics (Pods, Deployments, Services, ConfigMaps/Secrets, scaling); deploying DocuMind on it is not required.
+
+---
+
+## 6. Practical Production-Shape Requirements
+
+These are the five practical project areas explicitly identified in the Phase 3 plan.
+
+### 6.1 Background Workers and Queue-Based Ingestion
+
+- Add Redis and a Celery worker to Docker Compose.
+- `POST` upload: validate the file and the concurrent-upload limit, store the file (Blob in production, local storage in development), create a job, enqueue it, and return `202 Accepted` with the job ID.
+- The worker runs the **full Phase 2 ingestion pipeline**: extract pages → chunk → summary and embeddings (in parallel) → save document, summary and chunks in one transaction → update the job → delete the temporary blob.
+- `GET /jobs/{job_id}` returns status and, when completed, the document and summary. The frontend polls it and shows progress per file.
+- Retries for transient errors only, with backoff and a maximum attempt count; idempotent by content hash so a retried or duplicated task does no duplicate work.
+- Errors are recorded on the job with a safe message.
+- The concurrent-upload limit (3 per user) and duplicate detection move to the backend; the browser checks stay only as a convenience.
+
+### 6.1b Backfill for documents without chunks
+
+Documents uploaded before Phase 2 have summaries but no chunks, so chat cannot find them. A backfill script (Phase 2 step 9, moved here) indexes them:
+
+- Selects documents with no rows in `chunks` (scoped to an owner once ownership exists).
+- Re-extracts pages from the stored `file_content`, chunks them, embeds them, and saves the chunks in one transaction per document. The existing summary is kept; no summary call is made.
+- Shows the document count and an estimated embedding cost first and waits for approval (`--estimate-only`, then `--yes`), like the eval runner.
+- Idempotent: a document that already has chunks is skipped, so a stopped run can simply be run again.
+- Logs every embedding call (`ai_usage`) and every failed document; a failure does not stop the other documents, and the summary at the end lists failures.
+- Runs as a command (`python -m app.scripts.backfill_chunks`) and, after Step 4, can enqueue one worker task per document instead.
+- Runs on a Neon branch first, then production.
+
+### 6.2 Caching
+
+Candidate caches (choose based on measurement, not all at once):
+
+| Cache | Key | Why |
+|---|---|---|
+| Question embeddings | model + normalized question text | Repeated questions skip an embedding call |
+| Retrieval results | user + selected documents + question + retrieval settings | Repeated questions skip the search |
+| Summaries | content hash + model + prompt version | Re-uploading the same file skips a paid summary |
+
+- Every key includes the settings that change the result (model, prompt version, retrieval mode).
+- Define TTLs, and invalidate on document deletion and on settings or prompt changes.
+- Cache entries are scoped per user where the data is user-owned; no cross-user leakage.
+- Measure hits/misses and the effect on latency and cost.
+- Postgres remains the durable source of truth; Redis can be flushed at any time without data loss.
+
+### 6.3 Monitoring and Load Testing
+
+- Metrics for the API, workers, queue depth, job durations and LLM usage.
+- Dashboards and alerts for errors, cost, quality and performance (who receives alerts and how is decided during implementation).
+- **Fake LLM mode** (a setting) that replaces chat, summary and embedding calls with fake responses with realistic delays and token counts. Load tests use it by default, so they measure the system (API, queue, workers, database) without spending money.
+- Locust scenarios: concurrent uploads, job-status polling, and chat questions.
+- Measure response time, throughput, error rate, queue backlog and P50/P95/P99.
+- A small, approved run against the real models afterwards, with its estimated cost shown first.
+- Identify bottlenecks, improve them, rerun, and document the results with real numbers.
+
+---
+
+## 7. Optional Extension — My AI Analytics (Per-User Dashboard)
+
+> **This goes beyond the Phase 3 requirements**, which ask for dashboards for cost and quality (satisfied by the internal dashboard in §5.4). It is a large feature and is scheduled **last**, only after all required work is done.
+
+Each authenticated user sees **their own usage data only**. One user must never be able to view another user's data.
+
+**Security principle:** the backend derives the user's identity from the verified token and enforces user scoping in every endpoint and query. A `user_id` sent by the frontend is never trusted.
+
+**Sections (keep the first version small):**
+
+- **Usage overview:** number of AI requests, input/output tokens, estimated cost, average response time.
+- **Cost over time** and by feature (summary, chat).
+- **Performance:** P50/P95 latency, clearly labeled (API latency vs complete LLM operation).
+- **Reliability:** success rate, failed requests, fallback usage.
+- **Activity:** the user's recent requests with safe details (request ID, time, feature, model, tokens, cost, latency, status).
+
+Not included for users: cache analytics, queue backlog, worker errors, full traces, or any system-wide numbers. Those belong to the internal dashboard.
+
+Placeholder numbers are allowed during UI development only when clearly labeled as demo data. Once connected, all numbers come from real backend data.
+
+---
+
+## 8. Proposed API Contracts and Data
+
+Initial proposals, to be confirmed after the architecture audit. Existing routes (`/documents`, `/chat/stream`, `/dashboard`) are kept or renamed only with a clear reason.
+
+### Endpoints
+
+| Method / Route | Purpose |
+|---|---|
+| `POST /documents/upload` | Validate, store the file, create and enqueue a job; returns `202` + job ID |
+| `GET /jobs/{job_id}` | Job status and result, owned by the authenticated user |
+| `GET /documents` | Documents owned by the authenticated user |
+| `GET /documents/{id}` | One owned document |
+| `DELETE /documents/{id}` | Delete an owned document (chunks cascade) |
+| `POST /chat/stream` | Unchanged SSE chat, scoped to the user's documents |
+| `GET /analytics/overview` | (Optional, §7) per-user usage summary |
+| `GET /analytics/activity` | (Optional, §7) per-user request history |
+
+### Data entities
+
+- **User:** from the auth provider (ID, email).
+- **Document:** existing table + `owner_user_id` (indexed), `content_hash` (unique per owner).
+- **Chunk:** existing table; ownership via its document. Search queries join on the owner.
+- **ProcessingJob:** `document_id`, `owner_user_id`, Celery task ID, status, attempts, error code, timestamps.
+- **LLMUsage:** `user_id`, `document_id`, `request_id`, feature, provider, model, input/output tokens, cached tokens, cost, cost source, latency, status, retry count, fallback flag, `created_at`.
+- **Trace references:** trace/span IDs linked to `request_id`, without copying sensitive content.
+
+All schema changes are Alembic migrations, tested on a fresh database in CI and on a Neon branch before production.
+
+---
+
+## 9. Implementation Sequence
+
+Each step: one branch or commit series, tests passing, diff reviewed, then merged.
+
+| Step | Work |
+|---|---|
+| **0. Preparation** | No user-visible behavior change. (a) One shared OpenRouter error wrapper in `services/` replaces the four copies of the mapping, and keeps `Retry-After` for every 429 (summary and embeddings too). (b) Turn off the SDK's silent retries (`max_retries=0`) on the shared client, so later app-level retries are the only retries and are counted. (c) Stop the two swallowed errors: `_delete_temporary_blob` logs a failed delete; `app/api/document-uploads/route.ts` logs the error before returning 400. (d) Fix the lint error in `app/page.tsx` and the unused import in `FileCard.tsx`, so `npm run lint` passes (needed for CI). (e) Update README (66 questions, hybrid chat, all optional settings), CLAUDE.md (where OpenRouter is called, known issues) and `backend/.env.example` (`OPENROUTER_CHAT_MODEL`, `RETRIEVAL_MIN_SIMILARITY`). Tests: existing suite passes; new tests for the wrapper (each error type, `Retry-After` kept, client built with `max_retries=0`) and for the logged blob-delete failure. |
+| **1. Architecture audit** | **Done** (revision 3 of this plan). Reviewed the code, CLAUDE.md and docs/design.md; §2 corrected; risks listed in §13. No code changes. |
+| **2. Auth, migrations and ownership** | Choose and add authentication (§4.1). Add Alembic and a baseline migration. Add `owner_user_id` and `content_hash`; scope every existing endpoint and search query to the user. Handle existing data. Tests that one user cannot read, search or delete another user's data. |
+| **3. Redis + Celery locally** | Redis and a worker in Docker Compose; a first trivial task; job table and states; `GET /jobs/{id}`. |
+| **4. Queue-based ingestion** | Move the full ingestion pipeline into the worker; `202` upload; frontend progress via polling; retries; idempotency by content hash; concurrent-upload limit and duplicate check enforced in the backend. |
+| **4b. Backfill** | Backfill script for documents without chunks (§6.1b): estimate first, idempotent, Neon branch first. |
+| **5. LLM production layer** | Persist per-request usage; app-level 429 handling with backoff and jitter; fallback models; circuit breaker; graceful degradation; latency measurement. |
+| **6. Caching and database review** | Redis caches from §6.2 with TTL and invalidation; measure hits and impact; review indexes and connection pooling. |
+| **7. Observability** | Structured JSON logs; OpenTelemetry across API, queue and worker; Langfuse; internal cost/quality/performance dashboard; alerts. |
+| **8. CI/CD** | GitHub Actions: backend tests (pgvector + Redis services), frontend checks, migrations, retrieval eval gate. |
+| **9. Production deployment** | Hosting is decided (§4.2). With the Azure details from §4.2: create Azure Managed Redis and the worker Container App (image in ACR, KEDA scaling); configure secrets; point the Vercel API at Redis; run migrations on a Neon branch, then production; run the backfill; smoke test. |
+| **10. Load testing and sign-off** | Fake LLM mode; Locust scenarios; measure, fix bottlenecks, rerun; one approved small real-model run; document results. |
+| **11. (Optional) My AI Analytics** | Per-user dashboard from §7 on real data. |
+
+---
+
+## 10. Acceptance Criteria — Definition of Done
+
+- [ ] Uploading a document returns quickly with a job ID; processing happens in a worker, and job states transition correctly.
+- [ ] The worker runs the full ingestion pipeline; a document is never saved without its chunks.
+- [ ] Retries do not cause duplicate documents, chunks or charges; only transient failures are retried.
+- [ ] At most 3 files upload at the same time per user; stored documents are unlimited.
+- [ ] Chat still streams over SSE and searches only the user's documents.
+- [ ] A user cannot read, search, delete or see usage for another user's data, even by changing IDs in requests.
+- [ ] All schema changes are Alembic migrations, applied in CI and in production.
+- [ ] Caches work with TTL and invalidation; hits/misses and impact are measured; flushing Redis loses no data.
+- [ ] Every LLM request is recorded with user, feature, model, tokens, cost and latency.
+- [ ] Fallback, rate-limit handling, retries and the circuit breaker follow clear rules and are tested.
+- [ ] When the AI service is down, documents and existing summaries remain available.
+- [ ] Logs and traces are correlated by IDs and contain no secrets or document contents.
+- [ ] GitHub Actions runs backend tests, frontend checks, migrations and the retrieval eval, and fails when any of them fails.
+- [ ] The worker and Redis run in production, and the deployed app works end to end.
+- [ ] Load-test results (fake LLM mode) are documented with real measurements, bottlenecks and improvements.
+- [ ] The Phase 2 eval suite still passes at or above its baseline.
+- [ ] Every document in production has chunks (backfill run), and chat can find documents uploaded before Phase 2.
+- [ ] The app makes no hidden retries: SDK retries are off, and every retry is the app's own and is counted.
+- [ ] (Optional) My AI Analytics shows real data for the authenticated user only, with empty, loading and error states.
+
+---
+
+## 11. Out of Scope for Now
+
+- Rebuilding DocuMind from scratch or replacing Next.js, FastAPI, PostgreSQL, pgvector or Neon without a clear reason.
+- Kafka, SQS or gRPC merely because they are mentioned in the plan.
+- Moving the whole application to Azure, or deploying it on Kubernetes. Moving the API to Azure Container Apps is a possible later step, after Phase 3.
+- Moving chat into the queue.
+- Streaming the summary live from the worker during upload.
+- Paid load tests against real models beyond one small, approved run.
+- Showing mock numbers as real metrics.
+- Showing system-wide costs, queue details or other users' data in any user-facing view.
+- The remaining Phase 2 items (reranking, the full answers-mode baseline, few-shot citation fix) unless picked up separately.
+
+---
+
+## 12. Review and Approval Checklist
+
+### Decisions
+- [ ] Authentication approach chosen (§4.1).
+- [ ] Handling of existing documents without an owner decided.
+- [ ] Upload experience without live summary streaming accepted (§4.3).
+- [x] Production hosting for Redis and the worker chosen (§4.2): Azure Container Apps + Azure Managed Redis.
+- [ ] Azure details provided (§4.2 list).
+
+### Processing and reliability
+- [ ] Redis + Celery + worker.
+- [ ] Queue-based ingestion with the full pipeline, job status and polling.
+- [ ] Retries, backoff and idempotency.
+- [ ] Circuit breaker and graceful degradation.
+
+### LLM and data
+- [ ] Persisted per-request usage (tokens, cost, latency, user, feature).
+- [ ] Fallback models and rate-limit handling.
+- [ ] Prompt caching and batching where appropriate.
+- [ ] Alembic migrations, ownership columns, indexes and connection pooling.
+
+### Observability and security
+- [ ] Structured logs and OpenTelemetry.
+- [ ] Langfuse traces and the internal dashboard.
+- [ ] Authentication, authorization and data isolation.
+- [ ] PII, prompt injection, secrets and least privilege.
+
+### Delivery and verification
+- [ ] Docker Compose and GitHub Actions.
+- [ ] Production deployment of Redis and the worker.
+- [ ] Monitoring and alerts.
+- [ ] Locust load tests (fake LLM mode) with documented results.
+- [ ] Phase 2 evals still at or above baseline.
+- [ ] Documentation updated (README, CLAUDE.md, docs/design.md).
+
+---
+
+## 13. Risks Found in the Audit
+
+Things in the current code that would make the queue, workers, auth or caching harder, with the fix and the step that applies it.
+
+| # | Risk | Fix | Step |
+|---|---|---|---|
+| 1 | **Cached async OpenRouter client.** `summarizer._get_async_client()` is `@cache`d per process, so the `AsyncOpenAI` client is tied to the first event loop. Celery tasks that call `asyncio.run()` get a new loop each time and will fail with "event loop is closed". | Create the client per event loop (cache keyed by the running loop) or per task, and close it when the loop ends. Test: two `asyncio.run()` calls in a row both succeed. | 3 |
+| 2 | **Module-level SQLAlchemy engine.** With Celery's pre-fork pool, child processes inherit the parent's open connections. The default pool (5 + 10 overflow per process) across API instances and workers can exceed Neon's connection limits. | Call `engine.dispose()` in Celery's `worker_process_init` signal; set explicit `pool_size` / `max_overflow` for API and worker; keep `prepare_threshold=None` and the pooled connection string. | 3, 6 |
+| 3 | **Schema code at startup.** `initialize_database()` runs DDL on every cold start and needs rights to create extensions. It would race with Alembic and conflicts with least-privilege database roles. | Alembic baseline migration that reproduces the current schema (extension, tables, indexes, `content_tsv`); then remove the startup DDL, keeping only a read-only check (embedding dimensions, Alembic revision is current). The app role no longer needs DDL rights. | 2 |
+| 4 | **Silent SDK retries and copied error mapping.** The SDK retries up to twice per call, hidden from logs; adding app retries, fallback models or a circuit breaker on top would multiply attempts. The mapping is copied in four files. | One shared error wrapper and `max_retries=0` (Step 0); app-level retries, fallback and the circuit breaker are then built once, in that wrapper. | 0, 5 |
+| 5 | **Upload limit and duplicate check are browser-only.** Any client can bypass them. | Enforce 3 concurrent jobs per user and duplicates by content hash in the backend (job table + unique `owner_user_id, content_hash`). | 4 |
+| 6 | **Sequential integer IDs.** Once auth exists, changing an ID in a request reaches another user's document unless every query is scoped. | Scope every query by `owner_user_id`, including both chat search legs and the `document_ids` check; return 404 (not 403) for other users' IDs; tests for each endpoint. | 2 |
+| 7 | **Upload rework conflicts with "don't rewrite working upload code".** The queue requires replacing the SSE upload reader in `DocumentsContext.tsx` and the two streaming endpoints. | Approved exception (§3 Constraints), limited to the upload flow. The extraction, chunking, embedding and save functions are reused unchanged by the worker. | 4 |
+| 8 | **Orphaned and silently undeleted blobs.** A failed worker or a swallowed delete error leaves temporary blobs behind. | Log failed deletes (Step 0); the worker deletes the blob when the job reaches a final state; a periodic cleanup task removes `documind/uploads/` blobs older than a set age with no active job. | 0, 4 |
+| 9 | **No input size cap for the summary.** Very large documents are sent whole to the summary model; the model's error comes back as a 502. A worker removes the time limit but not this. | Cap the summary input by estimated tokens (e.g. summarize the first N tokens, or summarize per section and combine), and fail the job with a clear, safe error code when over the limit. Measured with evals before and after if the prompt changes. | 4 |
+| 10 | **Next.js 16 compatibility for auth.** The app uses Next 16 with `cacheComponents` and experimental flags; auth libraries may lag. | Before choosing in Step 2, check that the chosen option supports Next 16 with `cacheComponents` (read `node_modules/next/dist/docs/` per AGENTS.md) with a small spike; no dependency is added without approval. | 2 |
+
+Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob authorization that only compares Origin and Host headers, which any script can fake (Step 2: the upload-token route requires a signed-in user); orphaned blobs (risk 8); documents without chunks (§6.1b); the 4.5 MB request limit (still applies, Blob stays) and the 300 s limit (no longer applies to ingestion once it runs in the worker); the lint failure (Step 0); Arabic PDFs (expected failures in the eval gate, not a regression).
+
+---
+
+## Source and Scope Notes
+
+The Phase 3 learning areas and production-project requirements come from the *Junior AI Engineer Development Plan*. The current-state baseline comes from the Phase 2 codebase and `docs/design.md`. The Redis + Celery choice, the API contracts, data entities, implementation order and acceptance criteria are implementation proposals agreed with the user. My AI Analytics is an optional extension beyond the plan's requirements.
+
+**Next action:** the architecture audit (Step 1) is done and this plan reflects it. Begin with Step 0 (preparation), then decide authentication (§4.1) for Step 2. Provide the Azure details in §4.2 before Step 9.
