@@ -37,7 +37,12 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json(result);
-  } catch {
+  } catch (error) {
+    // The response stays generic; the reason goes to the server logs only.
+    console.error(
+      "Blob upload authorization failed:",
+      error instanceof Error ? error.message : error,
+    );
     return NextResponse.json(
       { error: "Could not authorize this document upload." },
       { status: 400 },

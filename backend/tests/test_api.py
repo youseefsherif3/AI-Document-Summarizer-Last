@@ -1,6 +1,7 @@
 
 import asyncio
 import json
+import logging
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -172,6 +173,46 @@ def test_blob_stream_saves_summary_and_deletes_temporary_upload(monkeypatch):
     assert '"type": "done"' in response.text
     assert documents[0]["summary"] == "A blob summary."
     assert deleted == ["documind/uploads/file-random.txt"]
+
+
+def test_failed_temporary_upload_delete_is_logged_and_upload_still_succeeds(monkeypatch, caplog):
+    content = b"Blob document content."
+
+    async def mock_head(pathname):
+        return SimpleNamespace(size=len(content))
+
+    async def mock_get(pathname, *, access):
+        return SimpleNamespace(body=content)
+
+    async def failing_delete(pathname):
+        raise RuntimeError("Blob storage is unavailable.")
+
+    async def mock_stream(text):
+        yield "A blob summary."
+
+    monkeypatch.setattr(main.blob, "head_blob", mock_head)
+    monkeypatch.setattr(main.blob, "get_blob", mock_get)
+    monkeypatch.setattr(main.blob, "delete_blob", failing_delete)
+    monkeypatch.setattr(main, "stream_summary", mock_stream)
+    caplog.set_level(logging.WARNING, logger="app.main")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/documents/upload/stream/blob",
+            json={
+                "pathname": "documind/uploads/keep-random.txt",
+                "filename": "blob.txt",
+                "file_size": len(content),
+            },
+        )
+        documents = client.get("/documents").json()
+
+    assert response.status_code == 200
+    assert '"type": "done"' in response.text
+    assert documents[0]["summary"] == "A blob summary."
+    [record] = [r for r in caplog.records if "Could not delete temporary upload" in r.getMessage()]
+    assert "documind/uploads/keep-random.txt" in record.getMessage()
+    assert "Blob storage is unavailable" in caplog.text  # the error itself is logged too
 
 
 def test_cancelled_blob_stream_deletes_temporary_upload_without_persisting(monkeypatch):

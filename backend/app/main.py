@@ -100,8 +100,10 @@ async def _delete_temporary_blob(pathname: str):
     try:
         await blob.delete_blob(pathname)
     except Exception:
-        # A temporary upload can be cleaned up later if Blob is unavailable.
-        pass
+        # The upload itself is not affected; the temporary file stays in Blob storage
+        # until it is cleaned up later. Logged so leftover files can be found.
+        logger.warning("Could not delete temporary upload %r from Blob storage.", pathname,
+                       exc_info=True)
 
 
 @app.get("/")
