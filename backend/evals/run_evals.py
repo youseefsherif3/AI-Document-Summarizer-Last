@@ -384,9 +384,11 @@ def ensure_database(url: str) -> None:
 
 
 def reset_tables() -> None:
-    database.initialize_database()
-    with database.get_connection() as connection:
-        connection.execute(text("TRUNCATE TABLE documents RESTART IDENTITY CASCADE"))
+    """Rebuild the eval database from the Alembic migrations (it is emptied every run)."""
+    from app.migrate import reset_and_upgrade
+
+    reset_and_upgrade(database.DATABASE_URL)
+    database.check_database()
 
 
 async def index_corpus(corpus: list[CorpusFile], cache: EmbeddingCache) -> None:

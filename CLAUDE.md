@@ -14,7 +14,8 @@
   - Four services call OpenRouter, all through ai_calls.py: services/summarizer.py (streamed summary), services/chat.py (streamed answer), services/embeddings.py (chunk and question embeddings), services/llm.py (plain completion: query rewrite, eval judge). summarizer.py re-exports the error types, so `from app.services.summarizer import AIServiceError` still works
   - services/query_rewrite.py: rewrites a follow-up question into a standalone one before retrieval (one model call, only when there is history). QUERY_REWRITE_ENABLED is off by default
   - services/retrieval.py: chat retrieval. RETRIEVAL_MODE=hybrid (default: vector search + Postgres full-text search, merged with reciprocal rank fusion) or vector (vector search only)
-  - database.py: SQLAlchemy Core, one `documents` table. Postgres + pgvector only (Neon in production, docker-compose.yml locally); DATABASE_URL is required, there is no SQLite fallback
+  - database.py: SQLAlchemy Core queries on `documents` and `chunks`. Postgres + pgvector only (Neon in production, docker-compose.yml locally); DATABASE_URL is required, there is no SQLite fallback. At startup `check_database()` only reads: the app refuses to start unless the database is at the newest Alembic revision and the embedding column matches EMBEDDING_DIMENSIONS
+  - Schema: Alembic migrations in backend/migrations/versions/ (hand-written SQL). app/schema_check.py compares a database with a reference snapshot (migrations/snapshots/); app/migrate.py runs migrations from code (tests, evals)
 - Streaming uses SSE events: {"type": "delta" | "done" | "error", ...}. A document is saved only after the stream finishes successfully.
 - Provider errors are mapped (in services/ai_calls.py): TimeoutError→504, ConnectionError→503, AIServiceNotConfiguredError (OPENROUTER_API_KEY missing)→503, AIRateLimitError→429, AIServiceError→502
 - Retry rules (services/ai_calls.py): the SDK's own retries are off (`max_retries=0`). Timeouts (including 408), connection errors, 429 and 5xx are retried up to 2 times with exponential backoff and jitter; `Retry-After` is honored up to 60 s (longer: no retry, the AIRateLimitError carries `retry_after`); other 4xx errors are never retried. Every retry logs an `ai_retry` warning. A streamed call (summary, chat) is retried only if it fails before its first token; once text has reached the user it is never retried. Tests skip the waits (`retry_waits` fixture in tests/conftest.py)
@@ -36,11 +37,14 @@
 - New LLM/embedding code must log model, prompt/completion tokens, and estimated cost
 - New code must log errors instead of swallowing them (no bare `except Exception: pass`)
 - CPU-heavy or blocking work (PDF parsing, embedding batches, DB writes) must not block the event loop: use run_in_threadpool or async clients
+- Every schema change is a new Alembic migration (never DDL in app code), tested with upgrade → downgrade → upgrade (tests/test_migrations.py). Never edit a migration that has run on production; add a new one. tests/legacy_startup_schema.py is a frozen record of the pre-Alembic schema: never change it
+- **Never run `alembic downgrade` on production** (the baseline's downgrade drops all tables); production rollback uses the Neon backup branch taken before the migration
 
 ## Commands
 - Local database: docker compose up -d (stop: docker compose stop; status: docker compose ps; reset: docker compose down -v)
 - Backend packages: cd backend && pip install -r requirements-dev.txt
 - Backend tests (database must be running): cd backend && python -m pytest
+- Migrations (from backend/): python -m alembic upgrade head · python -m alembic current · python -m app.schema_check (read-only; before stamping a pre-Alembic database: python -m alembic stamp 0001_baseline). Production migrations use MIGRATION_DATABASE_URL (Neon direct URL), on a Neon branch first, and only with the user's OK
 - Backend dev server: cd backend && uvicorn app.main:app --reload
 - Frontend: npm run dev, npx tsc --noEmit, npm run lint (must pass with no errors), npm run build
 - Evals: cd backend && python -m evals.run_evals --estimate-only (then run without it; default mode is retrieval only; --mode answers uses free models; --resume <run-id> continues a stopped run; --category follow_up runs one category; --query-rewrite on rewrites follow-ups with the free EVAL_REWRITE_MODEL). Never run for real without showing the estimate and getting OK.

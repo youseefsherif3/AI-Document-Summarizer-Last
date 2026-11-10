@@ -7,19 +7,19 @@ TEST_DATABASE_URL and drops it afterwards.
 
 import os
 import uuid
-from pathlib import Path
 
 import pytest
 from alembic import command
-from alembic.config import Config
 from alembic.script import ScriptDirectory
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 import app.database as database
+import app.main as main
 from app import schema_check
-
-BACKEND_DIR = Path(__file__).resolve().parents[1]
+from app.migrate import alembic_config, head_revision, reset_and_upgrade
+from tests.legacy_startup_schema import build_legacy_schema
 
 
 def _admin_engine():
@@ -54,27 +54,29 @@ def scratch_database():
     admin.dispose()
 
 
-def alembic_config(url: str) -> Config:
-    config = Config(str(BACKEND_DIR / "alembic.ini"))
-    config.attributes["url"] = url
-    config.attributes["configure_logging"] = False
-    return config
+def build_with_old_startup_code(url: str, monkeypatch=None) -> None:
+    """The schema as the app created it before Alembic (a frozen copy of that code)."""
+    build_legacy_schema(url)
 
 
-def build_with_old_startup_code(url: str, monkeypatch) -> None:
-    """The schema as the app created it before Alembic: initialize_database() at startup."""
-    monkeypatch.setattr(database, "DATABASE_URL", url)
-    database.initialize_database()
-    database._engines.pop(database.sqlalchemy_url(url)).dispose()
+@pytest.fixture
+def app_database(monkeypatch):
+    """Point the app at another database for one test; the test database comes back after."""
+
+    def use(url: str) -> None:
+        monkeypatch.setattr(database, "DATABASE_URL", url)
+
+    return use
 
 
 def explain(expected: dict, actual: dict) -> str:
     return "\n".join(schema_check.differences(expected, actual))
 
 
-def test_there_is_one_head_and_it_is_the_baseline():
-    script = ScriptDirectory.from_config(alembic_config("postgresql://unused"))
-    assert script.get_heads() == ["0001_baseline"]
+def test_there_is_one_head():
+    script = ScriptDirectory.from_config(alembic_config())
+    assert len(script.get_heads()) == 1
+    assert head_revision() == script.get_heads()[0]
 
 
 def test_baseline_migration_matches_the_old_startup_schema_exactly(scratch_database, monkeypatch):
@@ -103,9 +105,11 @@ def test_upgrade_downgrade_upgrade_on_an_empty_database(scratch_database):
     url = scratch_database()
     config = alembic_config(url)
 
+    command.upgrade(config, "0001_baseline")
+    assert schema_check.snapshot_of(url) == schema_check.expected_snapshot("0001_baseline")
+
     command.upgrade(config, "head")
-    reference = schema_check.expected_snapshot("0001_baseline")
-    assert schema_check.snapshot_of(url) == reference
+    at_head = schema_check.snapshot_of(url)
 
     command.downgrade(config, "base")
     after_downgrade = schema_check.snapshot_of(url)
@@ -113,7 +117,7 @@ def test_upgrade_downgrade_upgrade_on_an_empty_database(scratch_database):
     assert after_downgrade["extensions"] == ["vector"]  # kept on purpose
 
     command.upgrade(config, "head")
-    assert schema_check.snapshot_of(url) == reference
+    assert schema_check.snapshot_of(url) == at_head, explain(at_head, schema_check.snapshot_of(url))
 
 
 def test_stamping_an_existing_database_changes_nothing(scratch_database, monkeypatch, capsys):
@@ -137,9 +141,84 @@ def test_stamping_an_existing_database_changes_nothing(scratch_database, monkeyp
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001_baseline"
         assert connection.execute(text("SELECT filename FROM documents")).scalars().all() == ["kept.txt"]
     engine.dispose()
-    # Upgrading a stamped database is a no-op.
-    command.upgrade(alembic_config(url), "head")
+    # Upgrading a stamped database to the baseline is a no-op.
+    command.upgrade(alembic_config(url), "0001_baseline")
     assert schema_check.snapshot_of(url) == before
+
+
+def test_a_stamped_old_database_upgrades_to_head_and_the_app_starts(
+    scratch_database, app_database
+):
+    """The production path: old schema, stamp, upgrade head, and the startup check passes."""
+    url = scratch_database()
+    build_with_old_startup_code(url)
+    command.stamp(alembic_config(url), "0001_baseline")
+    command.upgrade(alembic_config(url), "head")
+
+    app_database(url)
+    database.check_database()
+    with TestClient(main.app) as client:
+        assert client.get("/health").json() == {"status": "healthy"}
+
+
+# --- The startup check -------------------------------------------------------------------
+
+
+def test_startup_fails_on_a_database_that_was_never_migrated(scratch_database, app_database):
+    url = scratch_database()
+    build_with_old_startup_code(url)  # tables exist, but no migration history
+    app_database(url)
+
+    with pytest.raises(RuntimeError, match="no migration history") as raised:
+        database.check_database()
+    message = str(raised.value)
+    assert "python -m alembic upgrade head" in message
+    assert "python -m app.schema_check" in message
+    assert "python -m alembic stamp 0001_baseline" in message
+
+    # The app refuses to start, rather than serving requests on an unknown schema.
+    with pytest.raises(RuntimeError, match="no migration history"):
+        with TestClient(main.app):
+            pass
+
+
+def test_startup_fails_on_an_empty_database(scratch_database, app_database):
+    app_database(scratch_database())
+
+    with pytest.raises(RuntimeError, match="no migration history"):
+        database.check_database()
+
+
+def test_startup_fails_when_the_database_is_behind(scratch_database, app_database):
+    url = scratch_database()
+    command.upgrade(alembic_config(url), "0001_baseline")
+    engine = create_engine(database.sqlalchemy_url(url))
+    with engine.begin() as connection:  # simulate a database one revision behind the code
+        connection.execute(text("UPDATE alembic_version SET version_num = 'an_older_revision'"))
+    engine.dispose()
+    app_database(url)
+
+    with pytest.raises(RuntimeError, match=(
+        f"at revision an_older_revision, but this code needs {head_revision()}"
+    )) as raised:
+        database.check_database()
+    assert "python -m alembic upgrade head" in str(raised.value)
+
+
+def test_startup_check_never_changes_the_database(scratch_database, app_database):
+    url = scratch_database()
+    build_with_old_startup_code(url)
+    before = schema_check.snapshot_of(url)
+    app_database(url)
+
+    with pytest.raises(RuntimeError):
+        database.check_database()
+    assert schema_check.snapshot_of(url) == before
+
+
+def test_reset_refuses_databases_that_are_not_disposable():
+    with pytest.raises(RuntimeError, match="only \\*_test and \\*_eval"):
+        reset_and_upgrade("postgresql://docsum:docsum@127.0.0.1:5432/docsum")
 
 
 def test_schema_check_reports_each_difference(scratch_database, monkeypatch, capsys):

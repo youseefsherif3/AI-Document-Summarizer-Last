@@ -17,7 +17,7 @@ from vercel import blob
 
 from .extraction import extract_pages, join_pages
 from .database import (
-    initialize_database,
+    check_database,
     save_document_with_chunks,
     get_connection,
     delete_document,
@@ -46,7 +46,8 @@ _app_logger.setLevel(logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    initialize_database()
+    # Read-only: the schema comes from Alembic migrations, never from startup code.
+    check_database()
     yield
 
 

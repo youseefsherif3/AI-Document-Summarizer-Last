@@ -196,4 +196,4 @@ def test_startup_fails_when_embedding_dimensions_change(monkeypatch):
     monkeypatch.setattr(database, "EMBEDDING_DIMENSIONS", 3)
 
     with pytest.raises(RuntimeError, match=f"stores {DIMENSIONS}-dimension embeddings"):
-        database.initialize_database()
+        database.check_database()

@@ -77,15 +77,23 @@ source .venv/bin/activate
 ```
 
 Install the packages (`requirements-dev.txt` includes the app's packages plus the test and eval
-tools) and start the API:
+tools), create the tables with the database migrations, and start the API:
 
 ```bash
 pip install -r requirements-dev.txt
 ```
 
 ```bash
+python -m alembic upgrade head
+```
+
+```bash
 uvicorn app.main:app --reload
 ```
+
+The API does not create or change tables itself: it checks at startup that the database is
+migrated and refuses to start otherwise. If your local database was created before migrations
+existed, see [Database migrations](#database-migrations).
 
 The API runs on http://localhost:8000. http://localhost:8000/health should return
 `{"status":"healthy"}`. Each AI call logs one `ai_usage` line with its model, tokens and cost.
@@ -196,7 +204,27 @@ From the project root:
 - Stop: `docker compose stop` · start again: `docker compose start`
 - Check it's running: `docker compose ps`
 - Reset all databases (deletes all local documents): `docker compose down -v`, then
-  `docker compose up -d`
+  `docker compose up -d`, then `cd backend && python -m alembic upgrade head`
+
+## Database migrations
+
+The schema is created and changed only by [Alembic](https://alembic.sqlalchemy.org/)
+migrations in `backend/migrations/versions/`, never by the app. Run these from `backend/`;
+they use `MIGRATION_DATABASE_URL` if set, otherwise `DATABASE_URL`.
+
+- New database: `python -m alembic upgrade head`
+- See where a database is: `python -m alembic current` (newest available: `python -m alembic heads`)
+- A database created **before migrations existed** (by the app's old startup code), such as an
+  older local database or production: first check that it matches the baseline with
+  `python -m app.schema_check` (it only reads; exit code 0 means identical), then record it as
+  migrated with `python -m alembic stamp 0001_baseline` (changes nothing but the version
+  table), then `python -m alembic upgrade head`. If `schema_check` lists differences, stop and
+  look at them before stamping.
+- Tests and evals rebuild their own `_test` / `_eval` databases from the migrations on every
+  run.
+
+**Never run `alembic downgrade` on production:** the baseline's downgrade drops all tables.
+Production is rolled back with the Neon backup branch taken before the migration.
 
 ## Known limitations
 
@@ -255,14 +283,25 @@ and the `EVAL_*` settings are for local development only.
 
 ### Database
 
-There is no separate migration step: **on its first start the backend updates the database
-itself.** It enables the `vector` extension (available on every Neon plan), creates the
-`chunks` table with its HNSW index, and checks that stored vectors have 1,536 dimensions. It
-also adds the full-text search column (`content_tsv`, generated from each chunk's text) and its
-GIN index; Postgres fills it for every existing chunk when the column is added, so documents
-indexed before hybrid search are searchable by keyword without re-uploading. The existing
-`documents` table is kept as it is. Before the first deploy, create a **Neon branch of
-production as a backup**, and try the backend against that branch first. Filtering chat to
+The database is migrated **from your machine, before deploying** the backend: the backend only
+checks at startup that the database is at the newest migration (and that stored vectors have
+1,536 dimensions), and refuses to start otherwise. See [Database migrations](#database-migrations).
+
+1. Create a **Neon branch of production as a backup**, and try every step on a Neon branch
+   first.
+2. Set `MIGRATION_DATABASE_URL` to Neon's **direct** (unpooled) connection string of the
+   database you migrate; schema changes should not go through the pooler.
+3. For a database created before migrations existed (production today):
+   `python -m app.schema_check --url <direct URL>` must report no differences, then
+   `python -m alembic stamp 0001_baseline`. Then, for every database:
+   `python -m alembic upgrade head`.
+4. Deploy the backend.
+
+**Never run `alembic downgrade` on production** (the baseline's downgrade drops all tables).
+To roll back, redeploy the previous backend and, if the data must go back too, restore the
+Neon backup branch.
+
+The migrations enable the `vector` extension (available on every Neon plan). Filtering chat to
 selected documents needs pgvector 0.8 or newer (`SELECT extversion FROM pg_extension WHERE
 extname = 'vector';`).
 
@@ -274,7 +313,8 @@ The backend disables server-side prepared statements, so Neon's pooled connectio
 
 ### Order of deployment
 
-1. Create the Neon backup branch; note the pooled connection string.
+1. Create the Neon backup branch; note the pooled connection string (for `DATABASE_URL`) and
+   the direct one (for migrating). Migrate the database as described above.
 2. Create the private Blob store.
 3. Create the backend project (root `backend`), connect the Blob store, set its variables with
    `CORS_ORIGINS` left for later, and deploy. Check `https://your-api.vercel.app/health`.

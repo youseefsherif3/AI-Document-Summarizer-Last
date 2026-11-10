@@ -44,11 +44,15 @@ def _test_database_url() -> str:
 
 @pytest.fixture(scope="session", autouse=True)
 def test_database():
+    """The test database, rebuilt from the Alembic migrations once per test run."""
+    from app.migrate import reset_and_upgrade
+
     url = _test_database_url()
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(database, "DATABASE_URL", url)
         try:
-            database.initialize_database()
+            reset_and_upgrade(url)
+            database.check_database()
         except OperationalError as error:
             pytest.exit(
                 f"Cannot connect to the test database ({error.orig}). {SETUP_HINT}",

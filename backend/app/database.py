@@ -7,17 +7,13 @@ from typing import Iterator, Sequence
 from sqlalchemy import (
     Column,
     DateTime,
-    ForeignKey,
-    Index,
     Integer,
     LargeBinary,
     MetaData,
     String,
     Table,
     Text,
-    UniqueConstraint,
     create_engine,
-    inspect,
     text,
 )
 from sqlalchemy.engine import Connection, Engine
@@ -36,7 +32,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 class Vector(UserDefinedType):
-    """pgvector's `vector(n)` column type, for table creation only.
+    """pgvector's `vector(n)` column type (used by the frozen pre-Alembic schema in tests).
 
     Values are written and searched with plain SQL (`CAST(:v AS vector)`), so no
     pgvector Python package is needed.
@@ -51,6 +47,9 @@ class Vector(UserDefinedType):
         return f"vector({self.dimensions})"
 
 
+# The schema is created and changed only by Alembic migrations (backend/migrations).
+# This table object is used to build queries; it never creates anything. Chunks are
+# written and searched with plain SQL below.
 metadata = MetaData()
 documents = Table(
     "documents",
@@ -63,34 +62,6 @@ documents = Table(
     Column("extracted_text", Text, nullable=False),
     Column("summary", Text, nullable=True),
     Column("created_at", DateTime, server_default=text("CURRENT_TIMESTAMP")),
-)
-
-chunks = Table(
-    "chunks",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    # Deleting a document deletes its chunks in the same statement.
-    Column(
-        "document_id",
-        Integer,
-        ForeignKey("documents.id", ondelete="CASCADE"),
-        nullable=False,
-    ),
-    Column("chunk_index", Integer, nullable=False),
-    Column("page_number", Integer, nullable=True),
-    Column("content", Text, nullable=False),
-    Column("token_estimate", Integer, nullable=False),
-    Column("embedding", Vector(EMBEDDING_DIMENSIONS), nullable=False),
-    Column("created_at", DateTime, server_default=text("CURRENT_TIMESTAMP")),
-    UniqueConstraint("document_id", "chunk_index", name="uq_chunks_document_chunk"),
-    Index("ix_chunks_document_id", "document_id"),
-    # Approximate nearest-neighbour index for cosine distance (the <=> operator).
-    Index(
-        "ix_chunks_embedding_hnsw",
-        "embedding",
-        postgresql_using="hnsw",
-        postgresql_ops={"embedding": "vector_cosine_ops"},
-    ),
 )
 
 
@@ -148,37 +119,40 @@ def get_connection() -> Iterator[Connection]:
         yield connection
 
 
-def initialize_database():
-    engine = _engine()
-    with engine.begin() as connection:
-        # pgvector, used by the RAG chunks table (Phase 2).
-        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    metadata.create_all(engine)
-
-    # Support existing databases created before summaries were stored.
-    columns = {column["name"] for column in inspect(engine).get_columns("documents")}
-    if "summary" not in columns:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE documents ADD COLUMN summary TEXT"))
-
-    with engine.begin() as connection:
-        _check_embedding_dimensions(connection)
-        _add_full_text_search(connection)
+MIGRATE_HINT = (
+    "Run `cd backend && python -m alembic upgrade head` "
+    "(see README, \"Database migrations\")."
+)
 
 
-def _add_full_text_search(connection: Connection):
-    """Full-text search for hybrid retrieval (step 15), added to new and existing databases.
+def check_database():
+    """Startup check. Only reads: the schema is created and changed by Alembic migrations.
 
-    The 'simple' config lowercases words but does not stem or drop stop words, so Arabic
-    and English words match as written.
+    Fails if the database is not migrated to the newest revision, or if its embedding
+    column doesn't match EMBEDDING_DIMENSIONS.
     """
-    connection.execute(text(
-        "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector "
-        "GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED"
-    ))
-    connection.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_chunks_content_tsv ON chunks USING gin (content_tsv)"
-    ))
+    from app.migrate import head_revision  # here, because app.migrate imports this module
+
+    with _engine().connect() as connection:
+        migrated = connection.execute(
+            text("SELECT to_regclass('public.alembic_version') IS NOT NULL")
+        ).scalar_one()
+        if not migrated:
+            raise RuntimeError(
+                "The database has no migration history. For a new database: "
+                f"{MIGRATE_HINT} For a database created before migrations existed, check it "
+                "with `python -m app.schema_check`, then mark it with "
+                "`python -m alembic stamp 0001_baseline`."
+            )
+        current = connection.execute(text("SELECT version_num FROM alembic_version")).scalars().all()
+        head = head_revision()
+        if current != [head]:
+            found = ", ".join(current) or "none"
+            raise RuntimeError(
+                f"The database schema is at revision {found}, but this code needs {head}. "
+                f"{MIGRATE_HINT}"
+            )
+        _check_embedding_dimensions(connection)
 
 
 def _check_embedding_dimensions(connection: Connection):
