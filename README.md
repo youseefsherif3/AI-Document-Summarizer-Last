@@ -125,10 +125,16 @@ the **Chat** page.
 - **Upload:** the file is read page by page and split into chunks of about 800 tokens that
   never cross a page. The chunks are embedded (`openai/text-embedding-3-small`) while the
   summary streams; the document and its chunks are saved together only if both succeed.
-- **Chat:** `POST /chat/stream` embeds the question, finds the 8 most similar chunks with
-  pgvector, and streams an answer that cites them as `[1]`, `[2]`… The chat page shows those
-  citations as buttons linked to a sources list (file, page, snippet). Answers come only from
-  the documents; if the answer isn't there, it says so.
+- **Chat:** `POST /chat/stream` embeds the question and finds the best chunks with **hybrid
+  search**: pgvector similarity search and Postgres full-text search (20 candidates each),
+  merged with reciprocal rank fusion into the top 8 (`RETRIEVAL_MODE=vector` switches to vector
+  search only). It then streams an answer that cites them as `[1]`, `[2]`… The chat page shows
+  those citations as buttons linked to a sources list (file, page, snippet). Answers come only
+  from the documents; if the answer isn't there, it says so.
+- **AI calls:** every call to OpenRouter (summary, chat, embeddings) goes through
+  `backend/app/services/ai_calls.py`. Timeouts, connection errors, rate limits (429) and
+  provider errors (5xx) are retried up to 2 times with backoff, honoring `Retry-After`; each
+  retry logs an `ai_retry` line. A streamed answer is never retried once text has been sent.
 
 ## Tests
 
@@ -147,13 +153,17 @@ npx tsc --noEmit
 ```
 
 ```bash
+npm run lint
+```
+
+```bash
 npm run build
 ```
 
 ## Evals
 
 `backend/evals/` measures retrieval and answer quality on a fictional corpus of 9 documents
-(English and Arabic) with 56 questions. Run from `backend/`. The runner always prints a cost
+(English and Arabic) with 66 questions. Run from `backend/`. The runner always prints a cost
 estimate first and asks before running; see the estimate with:
 
 ```bash
@@ -229,9 +239,15 @@ Backend project:
 | `OPENROUTER_API_KEY` | your OpenRouter key (secret) |
 | `BLOB_READ_WRITE_TOKEN` | the same Blob store, connected to this project too (secret) |
 | `CORS_ORIGINS` | the frontend's exact URL, for example `https://your-app.vercel.app`; comma-separate several (preview URLs are blocked unless listed) |
-| `OPENROUTER_MODEL` | optional, default `openai/gpt-4o` |
+| `OPENROUTER_MODEL` | optional, default `openai/gpt-4o` (the summary model) |
+| `OPENROUTER_CHAT_MODEL` | optional, default: the summary model |
+| `OPENROUTER_EMBEDDING_MODEL` | optional, default `openai/text-embedding-3-small` |
+| `EMBEDDING_DIMENSIONS` | optional, default `1536`; must match the embedding model (changing it means re-indexing) |
 | `RETRIEVAL_MODE` | optional, default `hybrid` (vector + full-text search); `vector` switches back |
+| `RETRIEVAL_MIN_SIMILARITY` | optional, default `0` (no threshold; see `docs/design.md`, step 16) |
 | `QUERY_REWRITE_ENABLED` | optional, default off. Leave it unset: rewriting of follow-up questions is not yet measured with the production model (see `docs/design.md`) |
+| `QUERY_REWRITE_MODEL` | optional, default: the chat model |
+| `AI_PRICES_PER_MILLION_TOKENS` | optional JSON, used only to estimate cost when OpenRouter returns none |
 
 Never put `OPENROUTER_API_KEY` or `DATABASE_URL` in the frontend project. `TEST_DATABASE_URL`
 and the `EVAL_*` settings are for local development only.

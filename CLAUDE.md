@@ -9,14 +9,16 @@
   - Default: multipart POST to /documents/upload/stream
   - Blob mode: browser → Vercel Blob (authorized by app/api/document-uploads/route.ts) → POST /documents/upload/stream/blob
 - Backend: FastAPI in backend/app/
-  - main.py: endpoints, text extraction (pypdf, python-docx, utf-8), validation
-  - services/summarizer.py: the only place that calls OpenRouter (OpenAI SDK, base_url=https://openrouter.ai/api/v1)
+  - main.py: endpoints, validation; extraction.py: page-by-page text extraction (pypdf, python-docx, utf-8)
+  - services/ai_calls.py: the shared OpenRouter layer (OpenAI SDK, base_url=https://openrouter.ai/api/v1): the one client, the error types, error mapping and retries (`call_with_retries`, `stream_with_retries`)
+  - Four services call OpenRouter, all through ai_calls.py: services/summarizer.py (streamed summary), services/chat.py (streamed answer), services/embeddings.py (chunk and question embeddings), services/llm.py (plain completion: query rewrite, eval judge). summarizer.py re-exports the error types, so `from app.services.summarizer import AIServiceError` still works
   - services/query_rewrite.py: rewrites a follow-up question into a standalone one before retrieval (one model call, only when there is history). QUERY_REWRITE_ENABLED is off by default
   - services/retrieval.py: chat retrieval. RETRIEVAL_MODE=hybrid (default: vector search + Postgres full-text search, merged with reciprocal rank fusion) or vector (vector search only)
   - database.py: SQLAlchemy Core, one `documents` table. Postgres + pgvector only (Neon in production, docker-compose.yml locally); DATABASE_URL is required, there is no SQLite fallback
 - Streaming uses SSE events: {"type": "delta" | "done" | "error", ...}. A document is saved only after the stream finishes successfully.
-- Provider errors are mapped: TimeoutError→504, ConnectionError→503, AIServiceNotConfiguredError (OPENROUTER_API_KEY missing)→503, AIRateLimitError→429, AIServiceError→502
-- The chat page does NOT call the model yet; it only displays upload summaries.
+- Provider errors are mapped (in services/ai_calls.py): TimeoutError→504, ConnectionError→503, AIServiceNotConfiguredError (OPENROUTER_API_KEY missing)→503, AIRateLimitError→429, AIServiceError→502
+- Retry rules (services/ai_calls.py): the SDK's own retries are off (`max_retries=0`). Timeouts, connection errors, 429 and 5xx are retried up to 2 times with exponential backoff and jitter; `Retry-After` is honored up to 60 s (longer: no retry, the AIRateLimitError carries `retry_after`); other 4xx errors are never retried. Every retry logs an `ai_retry` warning. A streamed call (summary, chat) is retried only if it fails before its first token; once text has reached the user it is never retried. Tests skip the waits (`retry_waits` fixture in tests/conftest.py)
+- The chat page calls `POST /chat/stream` (sources → delta… → done/error) and shows citations; chat answers always stream directly from the API.
 
 ## In progress: Phase 2 (RAG)
 - Goal: turn the chat page into real "chat with your docs" with citations (file + page), plus an eval suite of 50+ questions
@@ -27,7 +29,7 @@
 - Step 15 (hybrid search) is done and hybrid is the default retrieval mode; results and the decision are in docs/design.md ("Step 15 results and decision"). Arabic normalization was skipped. Step 17 (reranking) has not started.
 
 ## Conventions
-- All calls to OpenRouter (chat and embeddings) live in backend/app/services/ — never from main.py or the frontend
+- All calls to OpenRouter (chat and embeddings) live in backend/app/services/ — never from main.py or the frontend — and go through services/ai_calls.py (`call_with_retries` / `stream_with_retries`); never call the client directly or add retries elsewhere
 - Never put API keys in the frontend
 - Tests mock every AI call (see tests/test_api.py with monkeypatch). No real API calls in pytest.
 - Tests run against the Docker test database (TEST_DATABASE_URL, name must end in `_test`); tests/conftest.py empties its tables before each test and refuses to run against DATABASE_URL.
@@ -40,7 +42,7 @@
 - Backend packages: cd backend && pip install -r requirements-dev.txt
 - Backend tests (database must be running): cd backend && python -m pytest
 - Backend dev server: cd backend && uvicorn app.main:app --reload
-- Frontend: npm run dev, npx tsc --noEmit, npm run build
+- Frontend: npm run dev, npx tsc --noEmit, npm run lint (must pass with no errors), npm run build
 - Evals: cd backend && python -m evals.run_evals --estimate-only (then run without it; default mode is retrieval only; --mode answers uses free models; --resume <run-id> continues a stopped run; --category follow_up runs one category; --query-rewrite on rewrites follow-ups with the free EVAL_REWRITE_MODEL). Never run for real without showing the estimate and getting OK.
 
 ## Known issues (deliberately out of scope for Phase 2 — don't fix unless asked)
@@ -49,7 +51,6 @@
 - Deployment is two Vercel projects (frontend at the repo root, backend in `backend/`) plus Neon; see README "Deployment". In production, uploads must use Vercel Blob (Vercel Functions accept at most 4.5 MB per request) and one upload must finish within the function time limit (300 s on Hobby). Documents uploaded before RAG have no chunks until re-uploaded.
 - Raw file bytes are stored in the DB but never read
 - Arabic **PDF** extraction with pypdf came out badly broken in our test (stray control characters, split words, scrambled word order) and was not investigated. Arabic PDFs are not supported for now, and eval questions whose source is an Arabic PDF (`waha_library_ar.pdf`, `nursin_port_ar.pdf`) are expected to fail. Arabic TXT and DOCX extraction, Arabic questions and English–Arabic retrieval worked in our tests, but Arabic is not a supported language: Arabic normalization for full-text search was skipped (step 15), and with hybrid search, English questions about Arabic documents rank worse than with vector-only search.
-- `npm run lint` fails on code from the original import, not changed in Phase 2: `app/page.tsx` (dashboard) calls a setState-ing function directly in `useEffect` (error: `react-hooks/set-state-in-effect`), and `components/documents/FileCard.tsx` imports `LoaderCircle` without using it (warning). `tsc --noEmit` and `npm run build` pass.
 
 ## Avoid
 - Don't change prompts without running evals before and after (this includes the query rewrite prompt)
