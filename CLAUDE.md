@@ -28,9 +28,14 @@
 - The chat page calls `POST /chat/stream` (sources → delta… → done/error) and shows citations; chat answers always stream directly from the API.
 
 ## In progress: Phase 3 (production readiness)
-- Plan: docs/phase3-plan.md (scope, decisions, steps, risks). One branch per step (phase3/step-N), one small commit per change; show each diff and wait for the user's OK before committing; merge into main only when the whole step works.
-- Rule: existing code changes only when Phase 3 requires it. Approved exceptions: the upload flow moves to the job queue (Step 4), and every query is scoped by owner (done in Step 2).
-- Done: Step 0 (shared AI call wrapper, logged errors, lint, docs; merged), Step 1 (audit), Step 2 on branch phase3/step-2 (cookie option A with the /api rewrite, Alembic, accounts, ownership, daily limits, Blob folders per user, sign-in pages). Step 2 is not merged: the production migration (Neon branch first, then production, then `claim_documents`) comes first.
+- Plan: docs/phase3-plan.md (scope, decisions, steps, risks). Its "Current Scope" section (revision 5) overrides the rest: Steps 3+4 as one part (Redis, Celery worker, queue ingestion, INGESTION_MODE=queue|inline, default inline; no content_hash), 6 (Redis cache only), 7 (Flower, /metrics, the existing logs; no OpenTelemetry or Langfuse), 10 (one Locust scenario with the fake LLM, one short report). Dropped: 4b, 5, 8, 11. Azure (9) is deferred; the full setup runs locally with Docker Compose, and Vercel keeps INGESTION_MODE=inline.
+- Way of working (replaces "show each diff and wait for OK"):
+  - Each part on its own branch (phase3/<part>); commit as you go without waiting for the user.
+  - Stop only at the end of a part, or for a real decision or anything risky (production, secrets, deleting data, paid AI calls). At the end of a part: a short summary, the test results and how to try it.
+  - Tests for the important behavior; mutation checks (break the code on purpose, confirm a test fails) only for security-related code.
+  - All rules about secrets, paid calls, production and new dependencies stay the same. Merge into main and push only when the user says so.
+- Rule: existing code changes only when Phase 3 requires it. Approved exceptions: the upload flow moves to the job queue (Steps 3+4, INGESTION_MODE=queue only), and every query is scoped by owner (done in Step 2).
+- Done: Step 0 (shared AI call wrapper, logged errors, lint, docs), Step 1 (audit), Step 2 (cookie option A with the /api rewrite, Alembic, accounts, ownership, daily limits, Blob folders per user, sign-in pages). All merged into main; production (Neon project broad-feather-89382117; documind-rag-dev is no longer used) is migrated to 0003_document_owner. schema_check lists Postgres 18 named NOT NULL constraints as differences; a separate small fix is pending.
 - Chat streaming stays exactly as it is: `POST /chat/stream` streams over SSE straight from the API and never goes through a queue.
 
 ## Phase 2 (RAG), done

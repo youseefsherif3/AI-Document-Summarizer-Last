@@ -4,9 +4,37 @@
 **Document purpose:** Scope definition and implementation plan for review
 **Project:** DocuMind — AI Document Summarizer & Chat with your Docs (RAG)
 **Date:** November 2026
-**Revision:** 4 (Step 1 audit of `main` at `fa292bf`; chat streaming rule and authentication decided)
+**Revision:** 5 (scope reduced to the production-project requirements; Steps 3 and 4 merged; monitoring decided; Azure deferred; `INGESTION_MODE`)
 
 > **Important:** This document describes the agreed target implementation. It does not mean that the listed components have already been implemented.
+
+## Current Scope (revision 5, 2026-11-10)
+
+To save time, Phase 3 now builds only what the production project asks for: **background workers, queue-based ingestion, caching, monitoring and load testing** (§1). This section overrides anything later in the document that says otherwise.
+
+| Step | Status |
+|---|---|
+| 0, 1, 2 | Done (merged into `main`; production migrated) |
+| 3+4. Redis, Celery worker and queue ingestion | **Kept, as one part:** Redis and the worker in Docker Compose, the job table, queue ingestion and the `INGESTION_MODE` setting (below). `content_hash` is **dropped** |
+| 6. Caching | **Kept, Redis cache only** (§6.2). The database review (indexes, connection pooling) is dropped |
+| 7. Monitoring | **Kept, decided:** Flower for the worker, a `/metrics` endpoint, and the existing structured logs. No OpenTelemetry, no Langfuse |
+| 10. Load testing | **Kept, small:** one Locust scenario against the fake LLM mode, and one short report |
+| 4b. Backfill | **Dropped:** production has no documents, so nothing needs chunks |
+| 5. LLM production layer | **Dropped** (persisted usage, fallback models, circuit breaker, graceful degradation) |
+| 8. CI/CD | **Dropped** |
+| 9. Production deployment on Azure | **Deferred.** No Azure resources are created in Phase 3 |
+| 11. My AI Analytics | **Dropped** |
+
+**Local setup instead of Azure.** The full queue setup runs locally with Docker Compose: Postgres + pgvector (existing), Redis and the Celery worker.
+
+**`INGESTION_MODE` (`queue` or `inline`).** A backend setting chosen per deployment:
+
+- `queue`: the upload stores the file, creates a job, enqueues it and returns `202`; the worker runs the ingestion (§6.1). Used locally with Docker Compose.
+- `inline`: today's upload flow, unchanged (one streaming request with the summary over SSE). The Vercel deployment uses it, so it keeps working without a worker or Redis.
+
+The default is `inline`, so a deployment that doesn't set it behaves as today. The backend's concurrent-upload limit applies in both modes; duplicate detection stays in the browser (no `content_hash`). How the frontend learns the mode (so it either reads the SSE stream or polls the job) is decided in Step 4, without a second setting that could disagree with the backend.
+
+**Production database:** the Neon project `broad-feather-89382117` (the backend's `DATABASE_URL`). The older Neon project `documind-rag-dev` is no longer used.
 
 ## How to Use This Document
 
@@ -70,22 +98,23 @@ Phase 3 builds on a working, deployed application. The following already exists 
 |---|---|
 | Frontend | Next.js + TypeScript (unchanged) |
 | Backend API | FastAPI (Python) on Vercel (unchanged) |
-| Database | PostgreSQL + pgvector: Docker locally, Neon in production (unchanged) |
+| Database | PostgreSQL + pgvector: Docker locally, Neon in production (unchanged): the Neon project `broad-feather-89382117`; `documind-rag-dev` is no longer used |
 | Migrations | **Alembic** (new) |
 | Authentication | **Decided:** own email + password (Argon2id or bcrypt), session in an `httpOnly` `Secure` cookie, no external provider (see §4.1). The cross-domain cookie approach is chosen at the start of Step 2. |
 | Queue / background jobs | Redis + Celery |
 | Cache | Redis, logically separate from the queue (separate key prefixes or DB numbers) |
-| Worker + Redis hosting (production) | **Decided:** Celery worker on **Azure Container Apps**, Redis on **Azure Managed Redis** (see §4.2). Frontend, API, Neon and Vercel Blob stay as they are. |
-| LLM observability | Langfuse |
-| Tracing | OpenTelemetry |
-| Testing | Pytest + Locust (with a fake LLM mode) |
-| CI/CD | GitHub Actions |
-| Cloud | Azure fundamentals are intentionally skipped because the user already knows Azure. Azure hosts the Celery worker (Container Apps) and Redis (Azure Managed Redis); the rest stays where it is. |
+| Worker + Redis hosting (production) | **Deferred** (revision 5). Locally, Redis and the worker run in Docker Compose; the Vercel deployment uses `INGESTION_MODE=inline` and needs neither. The earlier choice (Azure Container Apps + Azure Managed Redis, §4.2) is kept for later. |
+| LLM observability | Langfuse (**dropped** in revision 5) |
+| Tracing | OpenTelemetry (**dropped** in revision 5) |
+| Monitoring | **Decided (revision 5):** Flower for the Celery worker, a `/metrics` endpoint, and the existing structured `key=value` logs (`ai_usage`, `ai_retry`, …) |
+| Testing | Pytest + Locust (one scenario, with a fake LLM mode) |
+| CI/CD | GitHub Actions (**dropped** in revision 5) |
+| Cloud | Azure fundamentals are intentionally skipped because the user already knows Azure. Hosting the worker and Redis on Azure is deferred (revision 5). |
 
 ### Constraints
 
 - **Existing code changes only when Phase 3 requires it.** Working Phase 2 code is extended, not rewritten or refactored for its own sake. Each change to existing code must name the Phase 3 requirement or risk (§13) it serves. There are two approved exceptions where existing code is deliberately reworked:
-  1. **The upload flow moves to the job queue**, both the frontend (`context/DocumentsContext.tsx`: the SSE stream reader is replaced by job creation and status polling) and the backend (`POST /documents/upload/stream` and `/documents/upload/stream/blob` become a `202` upload that enqueues a job).
+  1. **The upload flow moves to the job queue** (in `INGESTION_MODE=queue`; `inline` keeps today's flow), both the frontend (`context/DocumentsContext.tsx`: the SSE stream reader is replaced by job creation and status polling) and the backend (`POST /documents/upload/stream` and `/documents/upload/stream/blob` become a `202` upload that enqueues a job).
   2. **Every query is scoped by owner**, including chat search (`search_chunks`, `full_text_search_chunks`, `existing_document_ids`), `GET /documents`, `/dashboard` and `DELETE /documents/{id}`.
 
   Step 0 (§9) is preparation that Phase 3 requires; it changes no user-visible behavior.
@@ -151,7 +180,9 @@ Conclusions: chat keeps streaming token by token through the rewrite, so the fal
 
 **Existing data (decided):** documents uploaded before auth have no owner and are visible to nobody. After registering, the user assigns them to their account with a one-off command run by hand: `python -m app.claim_documents --email … --dry-run`, then without `--dry-run`. Registration never assigns documents.
 
-### 4.2 Production hosting for Redis and the worker (decided)
+### 4.2 Production hosting for Redis and the worker (deferred)
+
+> **Deferred in revision 5.** Nothing in this section is built in Phase 3; it is kept for later. Production runs with `INGESTION_MODE=inline`.
 
 Vercel functions stop after each response (at most 300 s on Hobby, 800 s on Pro), with no persistent processes and no built-in Redis, so **a Celery worker cannot run on Vercel**. Enqueuing from the API is fine there (one Redis write per request).
 
@@ -212,7 +243,7 @@ This applies to upload only. Chat answers keep streaming token by token from `PO
 ### 5.3 Reliability
 
 - Retry transient errors only, with backoff (in the app and in Celery tasks).
-- **Idempotency:** a document is identified per user by a content hash; re-uploading the same file, or a task being delivered twice, must not create duplicate documents, chunks or charges.
+- **Idempotency:** a task delivered twice must not create a duplicate document or chunks: the worker saves the document and marks its job completed in one transaction, and skips a job that is already completed. (Revision 5: no content hash, so re-uploading the same file creates a second document, as today.)
 - **Circuit breaker** for repeated provider failures (Closed → Open → Half-open). While open, fail fast with a clear message instead of waiting on timeouts.
 - **Graceful degradation:** when the AI service is down, users can still list, open and delete documents and read existing summaries; new uploads are queued or fail clearly; chat shows a clear "AI unavailable" message.
 - **Job states:** `pending`, `processing`, `completed`, `failed`, with attempts, a safe error code and timestamps.
@@ -260,11 +291,13 @@ These are the five practical project areas explicitly identified in the Phase 3 
 - `POST` upload: validate the file and the concurrent-upload limit, store the file (Blob in production, local storage in development), create a job, enqueue it, and return `202 Accepted` with the job ID.
 - The worker runs the **full Phase 2 ingestion pipeline**: extract pages → chunk → summary and embeddings (in parallel) → save document, summary and chunks in one transaction → update the job → delete the temporary blob.
 - `GET /jobs/{job_id}` returns status and, when completed, the document and summary. The frontend polls it and shows progress per file.
-- Retries for transient errors only, with backoff and a maximum attempt count; idempotent by content hash so a retried or duplicated task does no duplicate work.
+- Retries for transient errors only, with backoff and a maximum attempt count; idempotent by job (§5.3), so a retried or duplicated task does no duplicate work.
 - Errors are recorded on the job with a safe message.
-- The concurrent-upload limit (3 per user) and duplicate detection move to the backend; the browser checks stay only as a convenience.
+- The concurrent-upload limit (3 per user) moves to the backend (counted from the job table); the browser check stays only as a convenience. Duplicate detection stays in the browser (revision 5).
 
 ### 6.1b Backfill for documents without chunks
+
+> **Dropped in revision 5:** production has no documents, so no document lacks chunks.
 
 Documents uploaded before Phase 2 have summaries but no chunks, so chat cannot find them. A backfill script (Phase 2 step 9, moved here) indexes them:
 
@@ -278,13 +311,13 @@ Documents uploaded before Phase 2 have summaries but no chunks, so chat cannot f
 
 ### 6.2 Caching
 
-Candidate caches (choose based on measurement, not all at once):
+Redis cache only (revision 5): the database review (indexes, connection pooling) is dropped. Candidate caches (choose based on measurement, not all at once):
 
 | Cache | Key | Why |
 |---|---|---|
 | Question embeddings | model + normalized question text | Repeated questions skip an embedding call |
 | Retrieval results | user + selected documents + question + retrieval settings | Repeated questions skip the search |
-| Summaries | content hash + model + prompt version | Re-uploading the same file skips a paid summary |
+| Summaries | hash of the file bytes (computed in memory; no column) + model + prompt version | Re-uploading the same file skips a paid summary |
 
 - Every key includes the settings that change the result (model, prompt version, retrieval mode).
 - Define TTLs, and invalidate on document deletion and on settings or prompt changes.
@@ -294,17 +327,24 @@ Candidate caches (choose based on measurement, not all at once):
 
 ### 6.3 Monitoring and Load Testing
 
-- Metrics for the API, workers, queue depth, job durations and LLM usage.
-- Dashboards and alerts for errors, cost, quality and performance (who receives alerts and how is decided during implementation).
-- **Fake LLM mode** (a setting) that replaces chat, summary and embedding calls with fake responses with realistic delays and token counts. Load tests use it by default, so they measure the system (API, queue, workers, database) without spending money.
-- Locust scenarios: concurrent uploads, job-status polling, and chat questions.
-- Measure response time, throughput, error rate, queue backlog and P50/P95/P99.
-- A small, approved run against the real models afterwards, with its estimated cost shown first.
-- Identify bottlenecks, improve them, rerun, and document the results with real numbers.
+**Monitoring (decided, revision 5):**
+
+- **Flower** for the Celery worker (tasks, states, retries, workers), as a service in Docker Compose.
+- **`/metrics`:** the app's own numbers, for example job counts by state, job durations, queue depth, cache hits and misses, and request counts. It shows system-wide numbers, so it is not a user endpoint: it stays off unless a metrics token is set, and requires that token (exact format chosen in Step 7; the isolation test learns about the route).
+- **Logs:** the existing structured `key=value` lines (`ai_usage`, `ai_retry`, errors), plus job IDs where relevant.
+- No OpenTelemetry, Langfuse, dashboards or alerts.
+
+**Load testing (revision 5):**
+
+- **Fake LLM mode** (a setting) that replaces chat, summary and embedding calls with fake responses with realistic delays and token counts, so the test measures the system (API, queue, worker, database) without spending money.
+- **One Locust scenario** against the local Docker Compose setup with the fake LLM (for example: sign in, upload, poll the job, ask a chat question).
+- **One short report** with response times (P50/P95), throughput, error rate and queue backlog, and any bottleneck found. No run against real models.
 
 ---
 
 ## 7. Optional Extension — My AI Analytics (Per-User Dashboard)
+
+> **Dropped in revision 5** (was Step 11). Kept here for reference only.
 
 > **This goes beyond the Phase 3 requirements**, which ask for dashboards for cost and quality (satisfied by the internal dashboard in §5.4). It is a large feature and is scheduled **last**, only after all required work is done.
 
@@ -352,7 +392,7 @@ Initial proposals, to be confirmed after the architecture audit. Existing routes
 - **User:** ID, email (unique, stored lowercased), password hash, `created_at`.
 - **Session:** hash of the session token, `user_id`, `created_at`, `expires_at`, `last_used_at`, `revoked_at`.
 - **Login attempt:** email, client IP, time, success (for rate limiting; may move to Redis later).
-- **Document:** existing table + `owner_user_id` (indexed), `content_hash` (unique per owner).
+- **Document:** existing table + `owner_user_id` (indexed). (`content_hash` dropped in revision 5.)
 - **Chunk:** existing table; ownership via its document. Search queries join on the owner.
 - **ProcessingJob:** `document_id`, `owner_user_id`, Celery task ID, status, attempts, error code, timestamps.
 - **LLMUsage:** `user_id`, `document_id`, `request_id`, feature, provider, model, input/output tokens, cached tokens, cost, cost source, latency, status, retry count, fallback flag, `created_at`.
@@ -370,17 +410,16 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 |---|---|
 | **0. Preparation** | **Done** (merged into `main`). No user-visible behavior change. (a) One shared OpenRouter error wrapper in `services/` replaces the four copies of the mapping, and keeps `Retry-After` for every 429 (summary and embeddings too). (b) Turn off the SDK's silent retries (`max_retries=0`) on the shared client, so later app-level retries are the only retries and are counted. (c) Stop the two swallowed errors: `_delete_temporary_blob` logs a failed delete; `app/api/document-uploads/route.ts` logs the error before returning 400. (d) Fix the lint error in `app/page.tsx` and the unused import in `FileCard.tsx`, so `npm run lint` passes (needed for CI). (e) Update README (66 questions, hybrid chat, all optional settings), CLAUDE.md (where OpenRouter is called, known issues) and `backend/.env.example` (`OPENROUTER_CHAT_MODEL`, `RETRIEVAL_MIN_SIMILARITY`). Tests: existing suite passes; new tests for the wrapper (each error type, `Retry-After` kept, client built with `max_retries=0`) and for the logged blob-delete failure. |
 | **1. Architecture audit** | **Done** (revision 3 of this plan). Reviewed the code, CLAUDE.md and docs/design.md; §2 corrected; risks listed in §13. No code changes. |
-| **2. Auth, migrations and ownership** | **Implemented on `phase3/step-2`, not merged yet:** the production migration comes first (see "Step 2 as built" below). `content_hash` moved to Step 4. First choose the cross-domain cookie option (§4.1, A or B) and approve the hashing dependency. Add email + password auth per §4.1: `users` and `sessions` tables, register / login / logout / me endpoints, login rate limiting, generic login error, CSRF protection, no secrets in logs, login and sign-up pages. Tests: hashing, generic error, rate limit, cookie flags, logout revokes the session, no password or token in captured logs. Add Alembic and a baseline migration. Add `owner_user_id` and `content_hash`; scope every existing endpoint and search query to the user. Handle existing data. Tests that one user cannot read, search or delete another user's data. |
-| **3. Redis + Celery locally** | Redis and a worker in Docker Compose; a first trivial task; job table and states; `GET /jobs/{id}`. |
-| **4. Queue-based ingestion** | Add `documents.content_hash` (moved here from Step 2) with a unique (owner, hash) constraint. Move the full ingestion pipeline into the worker; `202` upload; frontend progress via polling; retries; idempotency by content hash; concurrent-upload limit and duplicate check enforced in the backend. |
-| **4b. Backfill** | Backfill script for documents without chunks (§6.1b): estimate first, idempotent, Neon branch first. |
-| **5. LLM production layer** | Persist per-request usage; app-level 429 handling with backoff and jitter; fallback models; circuit breaker; graceful degradation; latency measurement. |
-| **6. Caching and database review** | Redis caches from §6.2 with TTL and invalidation; measure hits and impact; review indexes and connection pooling. |
-| **7. Observability** | Structured JSON logs; OpenTelemetry across API, queue and worker; Langfuse; internal cost/quality/performance dashboard; alerts. |
-| **8. CI/CD** | GitHub Actions: backend tests (pgvector + Redis services), frontend checks, migrations, retrieval eval gate. |
-| **9. Production deployment** | Hosting is decided (§4.2). With the Azure details from §4.2: create Azure Managed Redis and the worker Container App (image in ACR, KEDA scaling); configure secrets; point the Vercel API at Redis; run migrations on a Neon branch, then production; run the backfill; smoke test. |
-| **10. Load testing and sign-off** | Fake LLM mode; Locust scenarios; measure, fix bottlenecks, rerun; one approved small real-model run; document results. |
-| **11. (Optional) My AI Analytics** | Per-user dashboard from §7 on real data. |
+| **2. Auth, migrations and ownership** | **Done** (merged into `main`; production migrated, see "Step 2 as built" below). `content_hash` moved to Step 4 (then dropped in revision 5). First choose the cross-domain cookie option (§4.1, A or B) and approve the hashing dependency. Add email + password auth per §4.1: `users` and `sessions` tables, register / login / logout / me endpoints, login rate limiting, generic login error, CSRF protection, no secrets in logs, login and sign-up pages. Tests: hashing, generic error, rate limit, cookie flags, logout revokes the session, no password or token in captured logs. Add Alembic and a baseline migration. Add `owner_user_id` and `content_hash`; scope every existing endpoint and search query to the user. Handle existing data. Tests that one user cannot read, search or delete another user's data. |
+| **3+4. Redis, Celery worker and queue ingestion** (one part) | Redis and the worker in Docker Compose; job table and states; `GET /jobs/{id}`; `INGESTION_MODE` (`queue` or `inline`, default `inline`; see "Current Scope"). In `queue` mode, the full ingestion pipeline runs in the worker; `202` upload; frontend progress via polling; retries; idempotency by job (§5.3). `inline` keeps today's upload flow. In both modes: the concurrent-upload limit is enforced in the backend. No `content_hash`. |
+| ~~**4b. Backfill**~~ | **Dropped** (revision 5): production has no documents. |
+| ~~**5. LLM production layer**~~ | **Dropped** (revision 5). |
+| **6. Caching** | Redis caches from §6.2 with TTL and invalidation; measure hits and impact. (The database review is dropped.) |
+| **7. Monitoring** | Flower in Docker Compose, `/metrics` behind a token, job IDs in the existing logs (§6.3). |
+| ~~**8. CI/CD**~~ | **Dropped** (revision 5). |
+| ~~**9. Production deployment**~~ | **Deferred** (revision 5): no Azure resources in Phase 3. The full setup runs locally with Docker Compose; Vercel keeps `INGESTION_MODE=inline`. |
+| **10. Load testing** | Fake LLM mode; one Locust scenario against the local Docker Compose setup; one short report (§6.3). |
+| ~~**11. (Optional) My AI Analytics**~~ | **Dropped** (revision 5). |
 
 ### Step 2 as built (branch `phase3/step-2`)
 
@@ -395,7 +434,8 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | Frontend | `/login`, `/register`, sign-out in the header (email in the header from 1024 px, in the sidebar below), `proxy.ts` redirects, a 401 sends the user to sign in without loops, `?next=` limited to same-site paths. |
 | Also | Provider 402 (out of credit) → 503 with a clear message, logged, never retried. |
 | Checks | Backend tests (isolation tests read every route from the OpenAPI schema), tsc, lint, build; browser checks against the test database at 320–1280 px; retrieval eval before and after identical (`20261110-180003-step2-before-main`, `20261110-180015-step2-after-owner-scoping`). |
-| Not yet | Production: Neon branch rehearsal with preview deployments, then production migration, deploy, and `claim_documents`. The upload and chat checks in production wait until the OpenRouter account has credit again (it currently returns 402). |
+| Production | Migrated straight to production (no rehearsal branch, after a Neon backup branch): `schema_check`, `stamp 0001_baseline`, `upgrade head`; now at `0003_document_owner`. `schema_check` also listed 12 Postgres 18 named NOT NULL constraints (on columns already marked not null); handling them is a separate small commit. Production had no documents, so `claim_documents` was not needed. Merged into `main` at `56cf29e`. |
+| Not yet | The upload and chat checks in production wait until the OpenRouter account has credit again (it currently returns 402). |
 
 ---
 
@@ -407,19 +447,13 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [ ] At most 3 files upload at the same time per user; stored documents are unlimited.
 - [ ] Chat still streams over SSE and searches only the user's documents.
 - [ ] A user cannot read, search, delete or see usage for another user's data, even by changing IDs in requests.
-- [ ] All schema changes are Alembic migrations, applied in CI and in production.
+- [ ] All schema changes are Alembic migrations, applied in production.
 - [ ] Caches work with TTL and invalidation; hits/misses and impact are measured; flushing Redis loses no data.
-- [ ] Every LLM request is recorded with user, feature, model, tokens, cost and latency.
-- [ ] Fallback, rate-limit handling, retries and the circuit breaker follow clear rules and are tested.
-- [ ] When the AI service is down, documents and existing summaries remain available.
-- [ ] Logs and traces are correlated by IDs and contain no secrets or document contents.
-- [ ] GitHub Actions runs backend tests, frontend checks, migrations and the retrieval eval, and fails when any of them fails.
-- [ ] The worker and Redis run in production, and the deployed app works end to end.
-- [ ] Load-test results (fake LLM mode) are documented with real measurements, bottlenecks and improvements.
+- [ ] Flower shows the worker's tasks; `/metrics` returns the app's numbers only with the token; logs contain no secrets or document contents.
+- [ ] The full setup (Postgres, Redis, worker) runs locally with Docker Compose in `INGESTION_MODE=queue`, and the Vercel deployment keeps working in `INGESTION_MODE=inline`.
+- [ ] One Locust scenario (fake LLM mode) has run, with a short report of real measurements.
 - [ ] The Phase 2 eval suite still passes at or above its baseline.
-- [ ] Every document in production has chunks (backfill run), and chat can find documents uploaded before Phase 2.
 - [x] The app makes no hidden retries: SDK retries are off, and every retry is the app's own and is counted. (Step 0)
-- [ ] (Optional) My AI Analytics shows real data for the authenticated user only, with empty, loading and error states.
 
 ---
 
@@ -428,9 +462,9 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - Rebuilding DocuMind from scratch or replacing Next.js, FastAPI, PostgreSQL, pgvector or Neon without a clear reason.
 - Kafka, SQS or gRPC merely because they are mentioned in the plan.
 - Moving the whole application to Azure, or deploying it on Kubernetes. Moving the API to Azure Container Apps is a possible later step, after Phase 3.
+- (Revision 5) `content_hash` and backend duplicate detection; OpenTelemetry and Langfuse; more than one Locust scenario and any load test against real models; hosting the worker and Redis on Azure (Step 9, deferred); the backfill (Step 4b); the LLM production layer (Step 5: persisted usage, fallback models, circuit breaker, graceful degradation); CI/CD (Step 8); the database review in Step 6; My AI Analytics (Step 11).
 - Moving chat into the queue.
 - Streaming the summary live from the worker during upload.
-- Paid load tests against real models beyond one small, approved run.
 - Showing mock numbers as real metrics.
 - Password reset by email and email verification (known gap, §4.1); external sign-in providers.
 - Showing system-wide costs, queue details or other users' data in any user-facing view.
@@ -445,32 +479,22 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [x] Cross-domain cookie option chosen (§4.1): A, the `/api` rewrite, confirmed by the spike.
 - [x] Handling of existing documents without an owner decided: the `claim_documents` command, run by hand after registering.
 - [x] Upload experience without live summary streaming accepted (§4.3); chat streaming unchanged.
-- [x] Production hosting for Redis and the worker chosen (§4.2): Azure Container Apps + Azure Managed Redis.
-- [ ] Azure details provided (§4.2 list).
+- [x] Production hosting for Redis and the worker: deferred (revision 5); local Docker Compose, Vercel in `INGESTION_MODE=inline`.
 
 ### Processing and reliability
 - [ ] Redis + Celery + worker.
 - [ ] Queue-based ingestion with the full pipeline, job status and polling.
 - [ ] Retries, backoff and idempotency.
-- [ ] Circuit breaker and graceful degradation.
 
-### LLM and data
-- [ ] Persisted per-request usage (tokens, cost, latency, user, feature).
-- [ ] Fallback models and rate-limit handling.
-- [ ] Prompt caching and batching where appropriate.
-- [ ] Alembic migrations, ownership columns, indexes and connection pooling.
-
-### Observability and security
-- [ ] Structured logs and OpenTelemetry.
-- [ ] Langfuse traces and the internal dashboard.
-- [ ] Authentication, authorization and data isolation.
-- [ ] PII, prompt injection, secrets and least privilege.
+### Data and security
+- [x] Alembic migrations and ownership columns. (Step 2)
+- [x] Authentication, authorization and data isolation. (Step 2)
+- [ ] Redis caches with TTL and invalidation, measured.
 
 ### Delivery and verification
-- [ ] Docker Compose and GitHub Actions.
-- [ ] Production deployment of Redis and the worker.
-- [ ] Monitoring and alerts.
-- [ ] Locust load tests (fake LLM mode) with documented results.
+- [ ] Docker Compose with Postgres, Redis and the worker; `INGESTION_MODE` (`queue` / `inline`).
+- [ ] Monitoring: Flower, `/metrics`, existing logs.
+- [ ] One Locust scenario (fake LLM mode) and a short report.
 - [ ] Phase 2 evals still at or above baseline.
 - [ ] Documentation updated (README, CLAUDE.md, docs/design.md).
 
@@ -483,17 +507,17 @@ Things in the current code that would make the queue, workers, auth or caching h
 | # | Risk | Fix | Step |
 |---|---|---|---|
 | 1 | **Cached async OpenRouter client.** `summarizer._get_async_client()` is `@cache`d per process, so the `AsyncOpenAI` client is tied to the first event loop. Celery tasks that call `asyncio.run()` get a new loop each time and will fail with "event loop is closed". | Create the client per event loop (cache keyed by the running loop) or per task, and close it when the loop ends. Test: two `asyncio.run()` calls in a row both succeed. | 3 |
-| 2 | **Module-level SQLAlchemy engine.** With Celery's pre-fork pool, child processes inherit the parent's open connections. The default pool (5 + 10 overflow per process) across API instances and workers can exceed Neon's connection limits. | Call `engine.dispose()` in Celery's `worker_process_init` signal; set explicit `pool_size` / `max_overflow` for API and worker; keep `prepare_threshold=None` and the pooled connection string. | 3, 6 |
+| 2 | **Module-level SQLAlchemy engine.** With Celery's pre-fork pool, child processes inherit the parent's open connections. The default pool (5 + 10 overflow per process) across API instances and workers can exceed Neon's connection limits. | Call `engine.dispose()` in Celery's `worker_process_init` signal; set explicit `pool_size` / `max_overflow` for API and worker; keep `prepare_threshold=None` and the pooled connection string. | 3 |
 | 3 | **Schema code at startup.** `initialize_database()` runs DDL on every cold start and needs rights to create extensions. It would race with Alembic and conflicts with least-privilege database roles. | Alembic baseline migration that reproduces the current schema (extension, tables, indexes, `content_tsv`); then remove the startup DDL, keeping only a read-only check (embedding dimensions, Alembic revision is current). The app role no longer needs DDL rights. | 2 |
-| 4 | **Silent SDK retries and copied error mapping.** The SDK retries up to twice per call, hidden from logs; adding app retries, fallback models or a circuit breaker on top would multiply attempts. The mapping is copied in four files. | One shared error wrapper and `max_retries=0` (Step 0); app-level retries, fallback and the circuit breaker are then built once, in that wrapper. | 0, 5 |
-| 5 | **Upload limit and duplicate check are browser-only.** Any client can bypass them. | Enforce 3 concurrent jobs per user and duplicates by content hash in the backend (job table + unique `owner_user_id, content_hash`). | 4 |
+| 4 | **Silent SDK retries and copied error mapping.** The SDK retries up to twice per call, hidden from logs; adding app retries, fallback models or a circuit breaker on top would multiply attempts. The mapping is copied in four files. | One shared error wrapper and `max_retries=0` (Step 0); app-level retries are built once, in that wrapper (done in Step 0). Fallback and the circuit breaker are dropped (revision 5). | 0 |
+| 5 | **Upload limit and duplicate check are browser-only.** Any client can bypass them. | Enforce 3 concurrent jobs per user in the backend (counted from the job table). Duplicate detection stays in the browser (`content_hash` dropped in revision 5). | 3+4 |
 | 6 | **Sequential integer IDs.** Once auth exists, changing an ID in a request reaches another user's document unless every query is scoped. | Scope every query by `owner_user_id`, including both chat search legs and the `document_ids` check; return 404 (not 403) for other users' IDs; tests for each endpoint. | 2 |
 | 7 | **Upload rework conflicts with "don't rewrite working upload code".** The queue requires replacing the SSE upload reader in `DocumentsContext.tsx` and the two streaming endpoints. | Approved exception (§3 Constraints), limited to the upload flow. The extraction, chunking, embedding and save functions are reused unchanged by the worker. | 4 |
 | 8 | **Orphaned and silently undeleted blobs.** A failed worker or a swallowed delete error leaves temporary blobs behind. | Log failed deletes (Step 0); the worker deletes the blob when the job reaches a final state; a periodic cleanup task removes `documind/uploads/` blobs older than a set age with no active job. | 0, 4 |
 | 9 | **No input size cap for the summary.** Very large documents are sent whole to the summary model; the model's error comes back as a 502. A worker removes the time limit but not this. | Cap the summary input by estimated tokens (e.g. summarize the first N tokens, or summarize per section and combine), and fail the job with a clear, safe error code when over the limit. Measured with evals before and after if the prompt changes. | 4 |
 | 10 | **Cookies across two `vercel.app` domains, and Next.js 16.** The frontend and backend are different sites, so a backend session cookie is a third-party cookie (§4.1). If option A is chosen, Next 16 rewrites (with `cacheComponents` and experimental flags) must pass SSE chat through without buffering. | Choose option A or B at the start of Step 2. For A, a small spike first: chat SSE streams token by token through the rewrite, the cookie is set and sent, and the client IP reaches the backend (read `node_modules/next/dist/docs/` per AGENTS.md). | 2 |
 
-Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob authorization that only compares Origin and Host headers, which any script can fake (Step 2: the upload-token route requires a signed-in user); orphaned blobs (risk 8); documents without chunks (§6.1b); the 4.5 MB request limit (still applies, Blob stays) and the 300 s limit (no longer applies to ingestion once it runs in the worker); the lint failure (Step 0); Arabic PDFs (expected failures in the eval gate, not a regression).
+Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob authorization that only compares Origin and Host headers, which any script can fake (Step 2: the upload-token route requires a signed-in user); orphaned blobs (risk 8); documents without chunks (§6.1b, dropped: production has none); the 4.5 MB request limit (still applies, Blob stays) and the 300 s limit (no longer applies to ingestion once it runs in the worker); the lint failure (Step 0); Arabic PDFs (expected failures in the eval gate, not a regression).
 
 ---
 
@@ -501,4 +525,4 @@ Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob auth
 
 The Phase 3 learning areas and production-project requirements come from the *Junior AI Engineer Development Plan*. The current-state baseline comes from the Phase 2 codebase and `docs/design.md`. The Redis + Celery choice, the API contracts, data entities, implementation order and acceptance criteria are implementation proposals agreed with the user. My AI Analytics is an optional extension beyond the plan's requirements.
 
-**Next action:** the architecture audit (Step 1) is done and this plan reflects it. Begin with Step 0 (preparation); authentication is decided (§4.1), and Step 2 starts by choosing the cross-domain cookie option. Provide the Azure details in §4.2 before Step 9.
+**Next action:** Steps 0–2 are done and merged. Next is Steps 3+4 (Redis, Celery worker and queue ingestion), within the reduced scope in "Current Scope" at the top.
