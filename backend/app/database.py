@@ -107,20 +107,25 @@ class ChunkMatch:
 _engines: dict[str, Engine] = {}
 
 
+def sqlalchemy_url(url: str) -> str:
+    """A Neon or Docker PostgreSQL URL with SQLAlchemy's psycopg driver added.
+
+    Also used by the Alembic migrations (migrations/env.py)."""
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+psycopg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return url
+
+
 def _database_url() -> str:
     if not DATABASE_URL:
         raise RuntimeError(
             "DATABASE_URL is not set. Start the local database with "
             "`docker compose up -d` and set DATABASE_URL in backend/.env (see README)."
         )
-
     # Neon and Docker give a PostgreSQL URL without a SQLAlchemy driver suffix.
-    url = DATABASE_URL
-    if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+psycopg://", 1)
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+psycopg://", 1)
-    return url
+    return sqlalchemy_url(DATABASE_URL)
 
 
 def _engine() -> Engine:

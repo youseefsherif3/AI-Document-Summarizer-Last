@@ -1,0 +1,145 @@
+{
+  "extensions": [
+    "vector"
+  ],
+  "sequences": {
+    "chunks_id_seq": {
+      "owned_by": "chunks.id",
+      "type": "integer"
+    },
+    "documents_id_seq": {
+      "owned_by": "documents.id",
+      "type": "integer"
+    }
+  },
+  "tables": {
+    "chunks": {
+      "columns": {
+        "chunk_index": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "integer"
+        },
+        "content": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "text"
+        },
+        "content_tsv": {
+          "default": null,
+          "generated": "to_tsvector('simple'::regconfig, content)",
+          "not_null": false,
+          "type": "tsvector"
+        },
+        "created_at": {
+          "default": "CURRENT_TIMESTAMP",
+          "generated": null,
+          "not_null": false,
+          "type": "timestamp without time zone"
+        },
+        "document_id": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "integer"
+        },
+        "embedding": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "vector(1536)"
+        },
+        "id": {
+          "default": "nextval('chunks_id_seq'::regclass)",
+          "generated": null,
+          "not_null": true,
+          "type": "integer"
+        },
+        "page_number": {
+          "default": null,
+          "generated": null,
+          "not_null": false,
+          "type": "integer"
+        },
+        "token_estimate": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "integer"
+        }
+      },
+      "constraints": {
+        "chunks_document_id_fkey": "FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE",
+        "chunks_pkey": "PRIMARY KEY (id)",
+        "uq_chunks_document_chunk": "UNIQUE (document_id, chunk_index)"
+      },
+      "indexes": {
+        "chunks_pkey": "CREATE UNIQUE INDEX chunks_pkey ON public.chunks USING btree (id)",
+        "ix_chunks_content_tsv": "CREATE INDEX ix_chunks_content_tsv ON public.chunks USING gin (content_tsv)",
+        "ix_chunks_document_id": "CREATE INDEX ix_chunks_document_id ON public.chunks USING btree (document_id)",
+        "ix_chunks_embedding_hnsw": "CREATE INDEX ix_chunks_embedding_hnsw ON public.chunks USING hnsw (embedding vector_cosine_ops)",
+        "uq_chunks_document_chunk": "CREATE UNIQUE INDEX uq_chunks_document_chunk ON public.chunks USING btree (document_id, chunk_index)"
+      }
+    },
+    "documents": {
+      "columns": {
+        "created_at": {
+          "default": "CURRENT_TIMESTAMP",
+          "generated": null,
+          "not_null": false,
+          "type": "timestamp without time zone"
+        },
+        "extracted_text": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "text"
+        },
+        "file_content": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "bytea"
+        },
+        "file_size": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "integer"
+        },
+        "file_type": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "character varying"
+        },
+        "filename": {
+          "default": null,
+          "generated": null,
+          "not_null": true,
+          "type": "character varying"
+        },
+        "id": {
+          "default": "nextval('documents_id_seq'::regclass)",
+          "generated": null,
+          "not_null": true,
+          "type": "integer"
+        },
+        "summary": {
+          "default": null,
+          "generated": null,
+          "not_null": false,
+          "type": "text"
+        }
+      },
+      "constraints": {
+        "documents_pkey": "PRIMARY KEY (id)"
+      },
+      "indexes": {
+        "documents_pkey": "CREATE UNIQUE INDEX documents_pkey ON public.documents USING btree (id)"
+      }
+    }
+  }
+}
