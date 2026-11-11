@@ -24,7 +24,7 @@ from typing import Any
 
 from vercel import blob
 
-from app import jobs
+from app import cache, jobs
 from app.database import save_document_with_chunks
 from app.extraction import extract_pages, join_pages
 from app.services.chunking import chunk_pages
@@ -34,8 +34,10 @@ from app.services.summarizer import (
     AIRateLimitError,
     AIServiceError,
     AIServiceNotConfiguredError,
+    MODEL as SUMMARY_MODEL,
     stream_summary,
 )
+from app.services.ai_calls import ai_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +164,17 @@ async def _summary_text(extracted_text: str) -> str:
     return summary
 
 
+async def _cached_summary(owner_user_id: int, extracted_text: str) -> str:
+    """The summary, from the cache when this user's same text was summarized before."""
+    key = cache.summary_key(owner_user_id, ai_base_url(), SUMMARY_MODEL, extracted_text)
+    [cached] = await cache.get_many("summary", [key])
+    if isinstance(cached, str) and cached.strip():
+        return cached
+    summary = await _summary_text(extracted_text)
+    await cache.set_many("summary", {key: summary})
+    return summary
+
+
 async def run_pipeline(job: dict[str, Any]) -> int:
     """The Phase 2 ingestion for one job; returns the saved document's id."""
     file_content = await _load_file(job)
@@ -176,7 +189,9 @@ async def run_pipeline(job: dict[str, Any]) -> int:
         raise IngestionError("no_text", "No readable text found in the uploaded file.")
 
     # Summary and embeddings run at the same time. If one fails, stop paying for the other.
-    summary_task = asyncio.create_task(_summary_text(extracted_text))
+    summary_task = asyncio.create_task(
+        _cached_summary(job["owner_user_id"], extracted_text)
+    )
     embedding_task = asyncio.create_task(embed_texts([chunk.text for chunk in document_chunks]))
     try:
         await asyncio.wait({summary_task, embedding_task}, return_when=asyncio.FIRST_EXCEPTION)

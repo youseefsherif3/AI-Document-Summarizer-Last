@@ -391,6 +391,16 @@ def existing_document_ids(document_ids: Sequence[int], *, owner_user_id: int) ->
         return set(rows)
 
 
+def document_text(document_id: int, *, owner_user_id: int) -> str | None:
+    """The extracted text of one of the user's documents (None if it is not theirs)."""
+    with get_connection() as connection:
+        return connection.execute(
+            text("SELECT extracted_text FROM documents "
+                 "WHERE id = :id AND owner_user_id = :owner_user_id"),
+            {"id": document_id, "owner_user_id": owner_user_id},
+        ).scalar_one_or_none()
+
+
 def delete_document(document_id: int, *, owner_user_id: int) -> bool:
     """Delete one of the user's documents. False if there is no such document for this user
     (another user's document counts as not found)."""

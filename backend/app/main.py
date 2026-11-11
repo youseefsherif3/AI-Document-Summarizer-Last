@@ -17,7 +17,7 @@ from sqlalchemy import text
 from pydantic import BaseModel, Field
 from vercel import blob
 
-from . import auth, ingestion, jobs, limits
+from . import auth, cache, ingestion, jobs, limits
 from .auth import User, current_user, require_trusted_origin
 from .extraction import extract_pages, join_pages
 from .database import (
@@ -25,12 +25,15 @@ from .database import (
     save_document_with_chunks,
     get_connection,
     delete_document,
+    document_text,
     existing_document_ids,
 )
 from app.services.chat import HistoryMessage, prepare_answer, stream_answer
 from app.services.chunking import Chunk, chunk_pages
 from app.services.embeddings import embed_texts
+from app.services.ai_calls import ai_base_url
 from app.services.summarizer import (
+    MODEL as SUMMARY_MODEL,
     AIOutOfCreditError,
     AIRateLimitError,
     AIServiceError,
@@ -54,6 +57,7 @@ async def lifespan(app: FastAPI):
     # Read-only: the schema comes from Alembic migrations, never from startup code.
     limits.check_limit_settings()
     ingestion.check_ingestion_settings()
+    cache.check_cache_settings()
     check_database()
     yield
 
@@ -609,7 +613,14 @@ async def chat_stream(request: ChatRequest, user: User = Depends(current_user)):
 @app.delete("/documents/{document_id}", dependencies=[Depends(require_trusted_origin)])
 def remove_document(document_id: int, user: User = Depends(current_user)):
     # Another user's document is "not found", like a document that doesn't exist.
+    text_to_forget = document_text(document_id, owner_user_id=user.id)
     deleted = delete_document(document_id, owner_user_id=user.id)
+    if deleted and text_to_forget is not None:
+        # The cached summary of this document goes with it (embeddings hold no user data).
+        cache.delete_sync(
+            "summary",
+            cache.summary_key(user.id, ai_base_url(), SUMMARY_MODEL, text_to_forget),
+        )
 
     if not deleted:
         raise HTTPException(

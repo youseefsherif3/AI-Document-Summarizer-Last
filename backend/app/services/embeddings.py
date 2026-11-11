@@ -5,7 +5,9 @@ import logging
 import os
 import time
 
-from .ai_calls import AIServiceError, _get_async_client, call_with_retries
+from app import cache
+
+from .ai_calls import AIServiceError, _get_async_client, ai_base_url, call_with_retries
 from .usage import log_ai_usage
 
 logger = logging.getLogger(__name__)
@@ -21,14 +23,26 @@ class EmbeddingDimensionError(AIServiceError):
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """One vector per text, in the same order. Sent in batches of 64."""
+    """One vector per text, in the same order. Texts whose vector is cached (app/cache.py) are
+    not sent; the rest go in batches of 64, and each batch is cached as soon as it arrives."""
     if any(not text.strip() for text in texts):
         raise ValueError("Cannot embed empty text.")
 
-    vectors: list[list[float]] = []
-    for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
-        vectors.extend(await _embed_batch(texts[start:start + EMBEDDING_BATCH_SIZE]))
-    return vectors
+    provider = ai_base_url()
+    keys = [cache.embedding_key(provider, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, text)
+            for text in texts]
+    vectors: list[list[float] | None] = [
+        value if isinstance(value, list) and len(value) == EMBEDDING_DIMENSIONS else None
+        for value in await cache.get_many("embedding", keys)
+    ]
+    missing = [index for index, vector in enumerate(vectors) if vector is None]
+    for start in range(0, len(missing), EMBEDDING_BATCH_SIZE):
+        indexes = missing[start:start + EMBEDDING_BATCH_SIZE]
+        fresh = await _embed_batch([texts[index] for index in indexes])
+        for index, vector in zip(indexes, fresh):
+            vectors[index] = vector
+        await cache.set_many("embedding", {keys[i]: v for i, v in zip(indexes, fresh)})
+    return vectors  # type: ignore[return-value]  (every slot is filled)
 
 
 async def embed_query(text: str) -> list[float]:

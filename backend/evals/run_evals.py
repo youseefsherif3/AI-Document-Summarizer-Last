@@ -27,7 +27,10 @@ import httpx
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-import app.database as database
+# Evals measure the models and have their own embedding cache: never the app's Redis cache.
+os.environ["CACHE_ENABLED"] = "false"
+
+import app.database as database  # noqa: E402
 from app.extraction import Page, extract_pages, join_pages
 from app.services import chat
 from app.services.chunking import (

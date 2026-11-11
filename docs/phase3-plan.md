@@ -438,6 +438,18 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | Frontend | `DocumentsContext.tsx` polls `/jobs/{id}` every 1.5 s after a 202 ("Pending" while queued, "Summarizing" while the worker has it); the SSE path is unchanged. |
 | Checks | 654 backend tests (new: `test_queue_ingestion.py`, a migration test); `tsc`, lint. By hand against real Redis and Postgres with the AI calls faked: 3 uploads accepted, the 4th refused (429), jobs completed, a slot freed, the UI went Pending → Completed; the Compose worker container processed a job and failed it safely with `ai_not_configured` (its AI key was blanked, so no paid calls). Not run: a real upload through the worker with the paid provider. |
 
+### Step 6 as built (branch `phase3/redis-cache`, from `phase3/queue-ingestion`)
+
+| Area | What was built |
+|---|---|
+| Chosen caches | **Embeddings** (chunks and chat questions: one `mget` per call, only misses are sent, each batch cached as it arrives) and **summaries** (worker pipeline only: inline mode runs on Vercel, which has no Redis). Both TTL 7 days (`CACHE_EMBEDDING_TTL_SECONDS`, `CACHE_SUMMARY_TTL_SECONDS`). |
+| Not built | Retrieval-result cache: the paid call (the question's embedding) is already cached, the search is a millisecond query, and every upload and delete would need to invalidate it. Revisit only if the Step 10 load test shows search as a bottleneck. |
+| Keys | Embedding: hash of provider URL, model, dimensions and text (global: the value depends on the text only, the key is a one-way hash). Summary: `<owner id>:<hash of version, provider, model, text>`: per user, and a changed model or prompt version (`SUMMARY_CACHE_VERSION`) misses. Prefix `documind:cache:`; Redis database 1 (queue: 0), or `CACHE_REDIS_URL`. |
+| Invalidation | Deleting a document deletes its cached summary (best effort). Model, provider, dimensions and prompt version are in the keys. Everything else expires. |
+| Off / failure | `CACHE_ENABLED=false`, or no Redis URL (Vercel): off, Redis is never contacted. Redis down or slow (0.5 s timeouts): one `cache_unavailable` warning, the cache is skipped for 10 s, the request carries on; a corrupt or wrong-sized value is a miss. Redis calls run in a thread, so they never block the event loop or depend on a loop (the worker uses a new loop per job). |
+| Measuring | `cache kind=… hits=… misses=…` log lines and in-process `cache.stats` (`hit`, `miss`, `set`, `error` per kind); Step 7's `/metrics` can expose them. |
+| Checks | 699 backend tests (36 new, `test_cache.py`, with a fake Redis; the cache is off in all other tests). By hand against a real Redis container with a fake provider: the second embedding call made no provider call, keys in database 1 with a 604800 s TTL; with Redis stopped the calls still worked (one warning). No paid calls. Evals force the cache off. |
+
 ### Step 2 as built (branch `phase3/step-2`)
 
 | Area | What was built |
@@ -466,7 +478,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [ ] Chat still streams over SSE and searches only the user's documents.
 - [ ] A user cannot read, search, delete or see usage for another user's data, even by changing IDs in requests.
 - [ ] All schema changes are Alembic migrations, applied in production.
-- [ ] Caches work with TTL and invalidation; hits/misses and impact are measured; flushing Redis loses no data.
+- [x] Caches work with TTL and invalidation; hits/misses are logged and counted (impact on cost not measured with real numbers yet); flushing Redis loses no data. (Step 6)
 - [ ] Flower shows the worker's tasks; `/metrics` returns the app's numbers only with the token; logs contain no secrets or document contents.
 - [x] The full setup (Postgres, Redis, worker) runs locally with Docker Compose in `INGESTION_MODE=queue`, and the Vercel deployment keeps working in `INGESTION_MODE=inline`. (Steps 3+4: inline is the default and its tests pass; not yet redeployed to Vercel)
 - [ ] One Locust scenario (fake LLM mode) has run, with a short report of real measurements.
@@ -507,7 +519,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 ### Data and security
 - [x] Alembic migrations and ownership columns. (Step 2)
 - [x] Authentication, authorization and data isolation. (Step 2)
-- [ ] Redis caches with TTL and invalidation, measured.
+- [x] Redis caches with TTL and invalidation. (Step 6; hit/miss counters, no real-traffic measurement)
 
 ### Delivery and verification
 - [x] Docker Compose with Postgres, Redis and the worker; `INGESTION_MODE` (`queue` / `inline`). (Steps 3+4)

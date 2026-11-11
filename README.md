@@ -247,6 +247,36 @@ user can have at most 3 uploads running at the same time, in both modes (429 wit
 stopped an inline upload at its time limit) is dead: it is marked `failed` (`timed_out`) the next
 time its owner uploads or asks for it, and never counts toward the limit.
 
+## Redis cache
+
+When a Redis is configured (`REDIS_URL`, database 1; the queue uses database 0), two results that
+cost a paid AI call are cached:
+
+- **Embeddings** of chunks and chat questions: a re-uploaded file, an overlapping document or a
+  repeated question skips the embedding call. The key is a hash of provider, model, dimensions and
+  text, so a changed model never returns old vectors. Not per user: the value depends on nothing
+  but the text.
+- **Summaries**, per user: uploading the same text again (queue mode) skips the summary call.
+  Deleting the document deletes its cached summary.
+
+Both expire after 7 days. Not cached: chat answers (they must come from the user's current
+documents) and search results (a database query takes milliseconds). Postgres stays the source of
+truth: flush Redis whenever you like.
+
+Settings (`backend/.env`): `CACHE_ENABLED` (`false` turns it off), `CACHE_REDIS_URL` (instead of
+`REDIS_URL` database 1), `CACHE_EMBEDDING_TTL_SECONDS`, `CACHE_SUMMARY_TTL_SECONDS`. Without a
+Redis URL (Vercel today) the cache is simply off. If Redis goes down, requests carry on without
+it: one `cache_unavailable` warning is logged and Redis is left alone for 10 seconds.
+
+See it working: each lookup logs `cache kind=embedding hits=2 misses=0`. Upload the same file
+twice (or ask the same question twice) and watch the second one hit; with `docker compose logs -f
+worker` for summaries. To look inside Redis:
+
+```bash
+docker exec docsum-redis redis-cli -n 1 --scan        # the cached keys (hashes, no text)
+docker exec docsum-redis redis-cli -n 1 flushdb       # empty the cache
+```
+
 ## Database commands
 
 From the project root:

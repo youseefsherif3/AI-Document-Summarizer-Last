@@ -106,6 +106,18 @@ def ingestion_inline(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def cache_off(monkeypatch):
+    """The Redis cache is off in tests (backend/.env may point at a real Redis); cache tests
+    turn it on with a fake."""
+    import app.cache as cache
+
+    monkeypatch.setenv("CACHE_ENABLED", "false")
+    cache.reset_for_tests()
+    yield
+    cache.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def query_rewrite_off(monkeypatch):
     """Query rewriting calls a model, so it is off unless a test turns it on (with a fake)."""
     monkeypatch.delenv("QUERY_REWRITE_ENABLED", raising=False)
