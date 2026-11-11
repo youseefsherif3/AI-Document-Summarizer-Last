@@ -573,10 +573,335 @@ Things in the current code that would make the queue, workers, auth or caching h
 
 Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob authorization that only compares Origin and Host headers, which any script can fake (Step 2: the upload-token route requires a signed-in user); orphaned blobs (risk 8); documents without chunks (§6.1b, dropped: production has none); the 4.5 MB request limit (still applies, Blob stays) and the 300 s limit (no longer applies to ingestion once it runs in the worker); the lint failure (Step 0); Arabic PDFs (expected failures in the eval gate, not a regression).
 
+## 14. Production queue worker (Upstash Redis + Azure Container Apps), plan approved 2026-11-11
+
+Phase 3 runs in production with `INGESTION_MODE=inline`: an upload is processed inside the Vercel request
+(300 s limit on Hobby), with the summary streaming to the page. Queue mode (Redis + Celery worker, `202` +
+job id + polling) works locally, was load-tested (§ "Step 10 as built") and passed a real upload through
+SovereignEG. This section is the plan to run it in production. It supersedes the "Step 9 deferred" note for
+the worker and Redis only; the API stays on Vercel. Research checked 2026-11-11 against: Upstash pricing and
+billing pages and its Celery guide, Azure Container Apps scaling, lifecycle and billing pages, the KEDA
+Redis-list scaler page, Celery's Redis broker page, Neon's pooling and auto-suspend pages, and the installed
+`kombu` source (what Celery sends to Redis). What could not be confirmed is marked *(unverified)*.
+
+**Decided (user answers):** Neon is **AWS US East 2 (Ohio)**; Azure region **East US 2** (`eastus2`);
+Upstash **US East (Ohio) if offered, else N. Virginia**; the GitHub repository is **public**; an Upstash
+account exists. Commands are given as **PowerShell**, and every secret is read with `Read-Host` into a
+variable (never typed on a command line), so none ends up in PowerShell history.
+
+### 14.1 Setup
+
+| Point | Decision |
+|---|---|
+| Redis | **Upstash free** (500K commands/month; 250 MB; 1 database). Documented fallback: **Fixed 250 MB, $10/month**. |
+| Redis cache in production | **Off** (`CACHE_ENABLED=false`, no `CACHE_*`). Each cached chunk embedding is about 30 KB of JSON (a 40-chunk document is about 1.2 MB, so about 200 documents fill the free 250 MB); it adds commands; and our cache URL switches to Redis database 1, which a single-database plan may not have *(unverified)*. If ever on: set `CACHE_REDIS_URL` explicitly and cache summaries only. |
+| Worker | **Azure Container Apps, Consumption**, `min replicas 0`, **`max replicas 1`**, 0.5 vCPU / 1 GiB, `WORKER_CONCURRENCY=2` (load test: concurrency, not CPU, is the limit). One replica avoids the 2→1 scale-in, the only case where a replica with a running task can be removed. |
+| Registry | **GHCR**, public package (public repo: no pull credentials). Not Docker Hub (anonymous pull limits on shared Azure IPs). ACR Basic (about $5/month) only buys faster in-region pulls; not needed. |
+| Scale-in safety | Celery hard task limit 240 s (soft 200 s) < KEDA's 300 s cool-down (see 14.5). |
+
+```
+Browser ──(Blob client upload; token from the frontend's /api/document-uploads)──▶ Vercel Blob (private)
+Browser ──POST /api/documents/upload/stream/blob──▶ Vercel backend (INGESTION_MODE=queue)
+          head_blob size check · processing_jobs row (blob_pathname) · LPUSH task ──▶ Upstash Redis (TLS)
+          ◀── 202 {job_id}                                                            │
+Browser polls GET /jobs/{id} (Neon) every 1.5 s                                       │ KEDA: LLEN every 30 s
+                                                                                      ▼
+Azure Container Apps worker (0 → 1 replica) ◀── BRPOP ── Redis
+  get_blob(token) → extract → summary + embeddings (SovereignEG) → save document + chunks + job end
+  (Neon, one transaction) → delete the blob
+```
+
+The frontend needs **no change**: it reads the response (`202` → poll, otherwise SSE). Chat never uses the queue.
+
+### 14.2 How uploads reach the worker (Blob mode)
+
+- Production already uploads through Vercel Blob (`NEXT_PUBLIC_VERCEL_BLOB_UPLOADS=true`), so the multipart
+  path (file bytes in the job row) is not used. In queue mode the API only calls `head_blob` (size check),
+  creates the job with `blob_pathname` and enqueues; it does **not** download the file.
+- The worker needs the **same `BLOB_READ_WRITE_TOKEN`** to `get_blob(path, access="private")` and, when the
+  job ends (completed or failed; not while a retry waits), `delete_blob`. The token covers the whole store
+  (no narrower scope exists): a secret in both places, rotated in both if it leaks. The path rule
+  `documind/uploads/{user_id}/…` is enforced by the API before a job exists.
+- A job unchanged for 15 minutes is marked failed (`timed_out`) when seen; its Blob is **not** deleted (risk 8:
+  the periodic cleanup is still not built), so check the store for orphans now and then.
+- The first real queue upload also proves `vercel-blob` works from outside Vercel with only the token
+  *(unverified: same code path as on Vercel, never run from Azure)*.
+
+### 14.3 Worker settings
+
+| Variable | Value | Secret? | Notes |
+|---|---|---|---|
+| `DATABASE_URL` | Neon **pooled** URL (as the Vercel backend) | **yes** | see 14.4 |
+| `REDIS_URL` | `rediss://default:<TOKEN>@<endpoint>:6379?ssl_cert_reqs=required` | **yes** | the token is the password; the query makes the certificate check explicit |
+| `BLOB_READ_WRITE_TOKEN` | same Blob store as the backend | **yes** | |
+| `AI_API_KEY` | SovereignEG key | **yes** | |
+| `AI_BASE_URL` | `https://backend.sovereigneg.com/v1` | no | must equal the backend's |
+| `OPENROUTER_MODEL` | `gpt-4o-mini` | no | must equal the backend's (summary model) |
+| `OPENROUTER_EMBEDDING_MODEL` | `text-embedding-3-small` | no | must equal the backend's |
+| `EMBEDDING_DIMENSIONS` | `1536` | no | must equal the backend's (one vector column) |
+| `WORKER_CONCURRENCY` | `2` | no | |
+| `CACHE_ENABLED` | `false` | no | |
+| `RECORD_AI_USAGE` | default (on) | no | the worker writes `ai_usage`; flushed at shutdown (14.6) |
+
+Not needed on the worker: `OPENROUTER_API_KEY`, `OPENROUTER_CHAT_MODEL`, retrieval and rewrite settings,
+`CORS_ORIGINS`, `ALLOWED_ORIGINS`, `SESSION_DAYS`, daily limits (the API enforces them), `INGESTION_MODE`,
+`METRICS_TOKEN`, `USAGE_PRICES_*`. **`FAKE_LLM` must not exist.** Copy the provider, model and dimension
+values from the Vercel backend project instead of retyping them. In Container Apps the secrets are app
+secrets, referenced with `secretref:`.
+
+**Vercel backend project (production):** add `INGESTION_MODE=queue` and `REDIS_URL` (the worker's value).
+Everything else stays; still no `CACHE_*`, `FAKE_LLM`, `METRICS_TOKEN`, `WORKER_CONCURRENCY`. An environment
+change only applies to a **new deployment**: every change needs a redeploy. Function region: keep it in the
+US East area (the default `iad1`, Washington DC, is next to Ohio).
+
+### 14.4 Neon connection for a long-running worker
+
+- **Pooled** URL (PgBouncer, transaction mode): the one the backend already uses; the code is built for it
+  (`prepare_threshold=None`; the job limit uses `pg_advisory_xact_lock`, a transaction-level lock PgBouncer
+  allows; no session-level locks, `SET` or `LISTEN`).
+- The worker is **not** permanently connected: at `min replicas 0` it lives only during bursts. Each Celery
+  process has a small SQLAlchemy pool with `pool_pre_ping`, so a connection Neon dropped is replaced on next use.
+  On Neon's free plan the compute suspends after 5 minutes idle and resumes in "a few hundred milliseconds":
+  the first query of a burst may be that much slower (not an error).
+- Worst case 1 replica × 2 processes × pool (5 + 10) = 30 pooled client connections, far below PgBouncer's
+  10,000. A smaller pool is an optional tidy-up.
+- Region: Azure **East US 2** next to Neon's AWS US East 2 (Ohio): about 6 queries per job, same area.
+
+### 14.5 Cold start and scale-in
+
+Cold start (queue empty, replica at 0) when an upload arrives:
+
+1. The API enqueues and answers `202`; the page shows **Pending** and polls.
+2. KEDA notices within **≤30 s** (default polling interval; one `LLEN` of `documind`).
+3. Container Apps starts a replica: image pull from GHCR (a few hundred MB; slowest the first time on a
+   node), Python and Celery boot (about 5–10 s). Expect **about 40–90 s** from upload to job start
+   *(estimate; measured in the smoke test)*, then 5–40 s for the job. Uploads during startup wait in the list.
+
+Scale-in (queue drained): KEDA waits the **300 s cool-down** from its last sight of queue activity, then scales
+1 → 0 (Microsoft docs: cool-down applies only to the last replica going to 0; polling 30 s; SIGTERM, then SIGKILL
+after **30 s** by default).
+
+- **The catch:** KEDA's Redis scaler only sees the list length. A task a worker has taken is no longer in the
+  list (Celery moves it to the `unacked` hash), so a running task is **invisible** to KEDA. Protection: a hard
+  task limit of 240 s (soft 200 s), so no attempt outlives the 300 s cool-down (each retry passes through the
+  list again, restarting KEDA's clock); `max replicas 1` (no partial scale-in); a soft shutdown wait in Celery;
+  and optionally `terminationGracePeriodSeconds` above 30 s *(a template field Microsoft's docs mention only as
+  ≤600 s; check with `az containerapp show`)*.
+- A job cut off anyway is not lost: the task is `acks_late`; Celery requeues it on a warm shutdown, otherwise
+  Redis returns it after the **visibility timeout** (Celery's default is 1 hour, longer than our 15-minute
+  dead-job rule, so it is set to 600 s). A redelivered job is claimed again (`processing` jobs can be
+  re-claimed); a duplicate delivery saves nothing (job-id idempotency).
+- A message arriving exactly while the last replica shuts down stays in the list; the next KEDA poll starts a
+  new replica (a delay of a minute or two, no loss).
+- If the worker cannot start (wrong `DATABASE_URL`, missing secret, bad tag), jobs stay `pending` and are
+  marked failed (`timed_out`) after 15 minutes, when the user next looks. Hence the smoke test starts the
+  worker with `min replicas 1` first and watches its log.
+- If Redis is unreachable or over quota, the upload answers **503** "queue unavailable" and the job fails at
+  once (existing behaviour).
+
+### 14.6 Code and configuration changes (branch `phase3/prod-worker`)
+
+1. `app/worker.py`: for `rediss://` set `broker_use_ssl = {"ssl_cert_reqs": CERT_REQUIRED}` (kombu otherwise
+   falls back to *no certificate check* for `rediss://` without SSL options, `kombu/connection.py:324`; the API
+   publishes through the same Celery app); `broker_transport_options` `visibility_timeout=600` and
+   `polling_interval=5` (kombu uses it as the BRPOP timeout, `kombu/transport/redis.py:2168`, default 1 s;
+   confirmed by the Step A measurement); `task_soft_time_limit=200`, `task_time_limit=240`;
+   `worker_soft_shutdown_timeout`; flush the `ai_usage` writer when the worker shuts down.
+2. `backend/Dockerfile`: production `CMD` with `--without-gossip --without-mingle --without-heartbeat` and
+   no `-E` (they send pub/sub traffic that costs Upstash commands and only Flower needs); the compose worker
+   passes `command:` with `-E`. `backend/.dockerignore` excludes every `.env*`, keys and certificates at any
+   depth; the image is checked for secrets before any push (14.9, step B).
+3. Tests; no migration; no new dependency.
+4. Images are tagged with the git SHA, never `latest`: a rollback is "deploy the previous tag".
+
+### 14.7 Estimated Upstash commands per month (free tier: 500,000)
+
+Upstash bills **every command** (reads and writes alike; each command in a pipeline counts; `MULTI`/`EXEC`
+of N commands costs N+2; `AUTH`, `PING`, `SELECT`, `INFO` are free). Its Celery guide warns that an always-on
+worker "polls Redis continuously" and recommends a Fixed plan for that. It does **not** say how a blocked
+`BRPOP` is billed; I assume **each BRPOP call (one per timeout) is one command**, the pessimistic reading.
+**Step A measures this on the real database before any Azure resource exists.**
+
+From the kombu source, per job: publish about 1–3 commands; worker `BRPOP` 1, mark unacked (`MULTI`, `ZADD`,
+`HSET`, `EXEC`) 4, acknowledge (`MULTI`, `ZREM`, `HDEL`, `EXEC`) 4: **about 12 per job**, 12 more per retry.
+
+| Cost | Rate | Per month |
+|---|---|---|
+| KEDA queue check (`LLEN` every 30 s, always, even at 0 replicas) | 2,880/day | **about 86,000** |
+| A replica being up (BRPOP loop + unacked sweep) | about 0.5/s with `polling_interval=5` and no gossip/heartbeat; **1.3/s with Celery defaults** | per burst (about 400 s up: start 40 s + job 30 s + 300 s cool-down + KEDA lag): **about 200** (about 520 with defaults) |
+| Jobs | about 12 each | small |
+
+| Uploads per month | With these settings | With Celery defaults |
+|---|---|---|
+| 100 (60 bursts) | about 100,000 (20 %) | about 119,000 |
+| 300 (150 bursts) | about 120,000 (24 %) | about 168,000 |
+| 1,000 (400 bursts) | about 170,000 (34 %) | about 306,000 |
+| 1,000, all isolated (1,000 bursts) | about 300,000 (60 %) | about 620,000 (**over the cap**) |
+
+**Verdict:** the free tier is enough for expected use only with `polling_interval`, no gossip/heartbeat and no
+cache; the KEDA check alone is 17 % of the cap. When the quota runs out Upstash rejects commands, uploads
+answer 503, and the fix is the one-step rollback (14.8) or the $10 Fixed plan (limited per second; whether
+there is no monthly cap at all is *unverified*). Watch the Upstash dashboard; act at 70 %.
+
+### 14.8 Estimated Azure cost, and rollback to inline in one step
+
+Consumption plan, 0.5 vCPU / 1 GiB, scaled to zero when idle (nothing is charged at zero). Free every month
+**per subscription**: 180,000 vCPU-seconds, 360,000 GiB-seconds, 2 million requests. A burst keeps a replica
+active about 400 s: **200 vCPU-s and 400 GiB-s**.
+
+| Bursts per month | vCPU-s (180,000 free) | GiB-s (360,000 free) | Cost |
+|---|---|---|---|
+| 150 | 30,000 | 60,000 | **$0** |
+| 400 | 80,000 | 160,000 | **$0** |
+| 900 | 180,000 | 360,000 | **$0** (at the free limit) |
+| 1,500 | 300,000 | 600,000 | about $4 (120,000 × $0.000024 + 240,000 × $0.000003) *(rates from a June 2026 third-party article; Microsoft's page showed no numbers: confirm in the pricing calculator)* |
+
+Also: the environment creates a **Log Analytics workspace** (first 5 GB/month of logs free; our INFO logs are
+small; set a short retention); no request charge (no ingress); the free grant is shared with any other
+Container Apps in the subscription. **Expected total: $0 Azure, $0 Upstash free; worst case about $14/month.**
+
+**Rollback to inline, one step:** in the Vercel backend project delete `INGESTION_MODE` (or set it to `inline`)
+and **redeploy**. From then on uploads stream inline again; the frontend needs no change; pages already
+polling a job keep polling it. Leave the worker alone until it has drained (it finishes queued jobs and goes
+to zero by itself at no cost): `SELECT count(*) FROM processing_jobs WHERE mode='queue' AND status IN
+('pending','processing')` must be 0. If Redis itself is the problem, the same step applies; queued jobs then
+fail as `timed_out` after 15 minutes and the users upload again. No data migration is involved.
+
+### 14.9 Commands you run (PowerShell)
+
+Start every session with this: it keeps the session's history out of the history file, and defines a helper
+that reads a secret without echo and without putting it on a command line:
+
+```powershell
+Set-PSReadLineOption -HistorySaveStyle SaveNothing
+function Read-Secret($prompt) {
+  $s = Read-Host $prompt -AsSecureString
+  [System.Net.NetworkCredential]::new("", $s).Password
+}
+```
+
+**A. Measure on a real Upstash database (no Azure, no paid AI call)**
+
+1. Upstash console → *Create database*: name `documind-queue`, region **US East (Ohio)** if offered, otherwise
+   N. Virginia, **TLS on**, **eviction off** (an evicting queue loses tasks), Free plan.
+2. Copy the **Redis (TCP)** URL (`rediss://default:<TOKEN>@<endpoint>:6379`), add `?ssl_cert_reqs=required`,
+   and put it **yourself in `backend/.env`** as `UPSTASH_REDIS_URL=…` (the file is git-ignored; nothing prints it).
+3. From the project root (Docker Desktop running, `docker compose up -d db`):
+   ```powershell
+   backend\.venv\Scripts\python loadtest\upstash_check.py ping        # TLS + certificate check, prints no secret
+   backend\.venv\Scripts\python loadtest\upstash_check.py worker      # fake LLM, local DB; leave it running 10 minutes (idle)
+   # in a second window, after reading the dashboard's command count at the start and after 10 idle minutes:
+   backend\.venv\Scripts\python loadtest\upstash_check.py enqueue --count 10
+   ```
+   Read the **commands used** on the Upstash dashboard before, after the idle 10 minutes, and after the 10 jobs.
+   Expected: idle about 120 commands (0.2/s), about 12 per job. Tell me the three numbers.
+
+**B. Image: prove it holds no secrets, then push to GHCR**
+
+```powershell
+cd C:\Users\ysher\Downloads\AI-Document-Summarizer-master
+docker build -t documind-worker:check .\backend
+# Everything the image contains under /srv/backend, and any .env / key / certificate file anywhere in it:
+docker run --rm --entrypoint find documind-worker:check /srv/backend -type f
+docker run --rm --entrypoint sh documind-worker:check -c "find / -xdev ( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name 'users.json' ) -not -path '/usr/*' -not -path '/proc/*' 2>/dev/null"
+# Expected: the first lists only app/, migrations/, alembic.ini, requirements.txt; the second prints nothing.
+
+$ghUser = "<your-github-user>"
+$tag    = (git rev-parse --short HEAD)
+$token  = Read-Secret "GitHub token (write:packages)"
+$token | docker login ghcr.io -u $ghUser --password-stdin
+Remove-Variable token
+docker tag documind-worker:check ghcr.io/$ghUser/documind-worker:$tag
+docker push ghcr.io/$ghUser/documind-worker:$tag
+# GitHub → Packages → documind-worker → Package settings → Change visibility → Public
+```
+
+**C. Azure (Azure CLI; not yet run by anyone)**
+
+```powershell
+az login
+az account set --subscription "<SUBSCRIPTION>"
+az extension add --name containerapp --upgrade
+az provider register --namespace Microsoft.App
+az provider register --namespace Microsoft.OperationalInsights
+
+$rg = "documind-rg"; $env = "documind-env"; $app = "documind-worker"; $region = "eastus2"
+az group create -n $rg -l $region
+az containerapp env create -n $env -g $rg -l $region
+
+$dbUrl      = Read-Secret "Neon POOLED DATABASE_URL"
+$redisUrl   = Read-Secret "Upstash REDIS_URL (rediss://...?ssl_cert_reqs=required)"
+$redisToken = Read-Secret "Upstash token (the password in that URL)"
+$blobToken  = Read-Secret "BLOB_READ_WRITE_TOKEN"
+$aiKey      = Read-Secret "SovereignEG AI_API_KEY"
+$endpoint   = Read-Host "Upstash endpoint host (no scheme, no token)"
+
+az containerapp create -n $app -g $rg --environment $env `
+  --image ghcr.io/$ghUser/documind-worker:$tag `
+  --cpu 0.5 --memory 1.0Gi --min-replicas 1 --max-replicas 1 `
+  --secrets "database-url=$dbUrl" "redis-url=$redisUrl" "redis-password=$redisToken" "blob-token=$blobToken" "ai-api-key=$aiKey" `
+  --env-vars DATABASE_URL=secretref:database-url REDIS_URL=secretref:redis-url `
+             BLOB_READ_WRITE_TOKEN=secretref:blob-token AI_API_KEY=secretref:ai-api-key `
+             AI_BASE_URL=https://backend.sovereigneg.com/v1 OPENROUTER_MODEL=gpt-4o-mini `
+             OPENROUTER_EMBEDDING_MODEL=text-embedding-3-small EMBEDDING_DIMENSIONS=1536 `
+             WORKER_CONCURRENCY=2 CACHE_ENABLED=false `
+  --scale-rule-name queue-length --scale-rule-type redis `
+  --scale-rule-metadata "address=${endpoint}:6379" "listName=documind" "listLength=1" "enableTLS=true" `
+  --scale-rule-auth "password=redis-password"
+Remove-Variable dbUrl, redisUrl, redisToken, blobToken, aiKey
+```
+
+(`min-replicas 1` is for the smoke test only; step E sets it to 0. `listLength=1`: scale up when anything
+waits; with `max-replicas 1` this is just the 0→1 switch. The secret values pass through `az` as arguments for
+the length of that command, but never touch the PowerShell history. If the scaler is refused, add
+`"username=default"` to the metadata *(unverified)*.)
+
+**D. Smoke test the worker (before touching Vercel)**
+
+```powershell
+az containerapp logs show -n $app -g $rg --follow     # expect: Connected to rediss://…, documents.ingest, ready
+az containerapp replica list -n $app -g $rg -o table
+```
+
+**E. Scale to zero and watch it work**
+
+```powershell
+az containerapp update -n $app -g $rg --min-replicas 0
+# wait about 6 minutes; the replica list becomes empty
+```
+
+**F. Vercel (backend project: dashboard, or the CLI from `backend\`)**
+
+```powershell
+cd C:\Users\ysher\Downloads\AI-Document-Summarizer-master\backend
+$redisUrl = Read-Secret "Upstash REDIS_URL"
+$redisUrl | vercel env add REDIS_URL production
+Remove-Variable redisUrl
+"queue" | vercel env add INGESTION_MODE production
+vercel redeploy <latest-production-deployment-url>
+```
+
+Then in the browser: upload a small TXT and a PDF over 4.5 MB (Blob path); watch Pending → Summarizing →
+completed (the first one includes the cold start); ask a question in Chat; delete both. In Azure the log shows
+`job_started job_id=…` and `job_completed`; the Upstash command count rises by about 12 per upload; the Usage
+page shows the calls.
+
+**G. Rollback** is the two Vercel steps in 14.8.
+
+### 14.10 Order of work
+
+1. Branch `phase3/prod-worker`: the code changes (14.6), tests, the image check, and the Step A tool
+   (`loadtest/upstash_check.py`: `ping`, `worker`, `enqueue`; reads `UPSTASH_REDIS_URL` from `backend/.env`,
+   never prints it, forces the fake LLM and blank AI keys, uses only the local `docsum_load` database).
+2. You create the Upstash database and read the command counts (Step A); I adjust the numbers above.
+3. You run B and C, then D and E (I read logs you paste).
+4. You run F in a quiet hour; we verify together; rollback is ready.
+5. I record the measured numbers and what was built here, in the README deployment section and in `CLAUDE.md`.
+
 ---
 
 ## Source and Scope Notes
 
 The Phase 3 learning areas and production-project requirements come from the *Junior AI Engineer Development Plan*. The current-state baseline comes from the Phase 2 codebase and `docs/design.md`. The Redis + Celery choice, the API contracts, data entities, implementation order and acceptance criteria are implementation proposals agreed with the user. My AI Analytics is an optional extension beyond the plan's requirements.
 
-**Next action:** Steps 0–2 are merged. Steps 3+4 are built on `phase3/queue-ingestion` and wait for review and merge. Then Step 6 (Redis cache), Step 7 (Flower, `/metrics`) and Step 10 (one Locust scenario with the fake LLM), within the reduced scope in "Current Scope" at the top.
+**Next action:** the production queue worker (§14) is planned and approved; it is built on `phase3/prod-worker`, starting with Step A (measure Upstash command use with a local fake-LLM worker). Earlier note:  Steps 0–2 are merged. Steps 3+4 are built on `phase3/queue-ingestion` and wait for review and merge. Then Step 6 (Redis cache), Step 7 (Flower, `/metrics`) and Step 10 (one Locust scenario with the fake LLM), within the reduced scope in "Current Scope" at the top.
