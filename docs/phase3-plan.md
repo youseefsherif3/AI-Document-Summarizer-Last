@@ -15,7 +15,7 @@ To save time, Phase 3 now builds only what the production project asks for: **ba
 | Step | Status |
 |---|---|
 | 0, 1, 2 | Done (merged into `main`; production migrated) |
-| 3+4. Redis, Celery worker and queue ingestion | **Kept, as one part:** Redis and the worker in Docker Compose, the job table, queue ingestion and the `INGESTION_MODE` setting (below). `content_hash` is **dropped** |
+| 3+4. Redis, Celery worker and queue ingestion | **Built on branch `phase3/queue-ingestion` (not merged yet; see "Steps 3+4 as built").** Kept, as one part: Redis and the worker in Docker Compose, the job table, queue ingestion and the `INGESTION_MODE` setting (below). `content_hash` is **dropped** |
 | 6. Caching | **Kept, Redis cache only** (§6.2). The database review (indexes, connection pooling) is dropped |
 | 7. Monitoring | **Kept, decided:** Flower for the worker, a `/metrics` endpoint, and the existing structured logs. No OpenTelemetry, no Langfuse |
 | 10. Load testing | **Kept, small:** one Locust scenario against the fake LLM mode, and one short report |
@@ -423,6 +423,19 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | **10. Load testing** | Fake LLM mode; one Locust scenario against the local Docker Compose setup; one short report (§6.3). |
 | ~~**11. (Optional) My AI Analytics**~~ | **Dropped** (revision 5). |
 
+### Steps 3+4 as built (branch `phase3/queue-ingestion`)
+
+| Area | What was built |
+|---|---|
+| Dependency | `celery[redis]==5.7.0` (approved). Flower and Locust come with Steps 7 and 10. |
+| Jobs | Migration `0004_processing_jobs`; `app/jobs.py`. States `pending` → `processing` → `completed` / `failed`, attempts, safe `error_code` / `error_message`, `document_id` (kept as NULL if the document is deleted), the file in the row (`file_content`, cleared at the end) or in Blob (`blob_pathname`). `GET /jobs/{id}` is owner-scoped (404 for others). |
+| `INGESTION_MODE` | `inline` (default, checked at startup) or `queue`. The frontend decides by the response (`202` + job id → poll, otherwise read the SSE stream), so there is no second setting. In `queue` mode the Blob upload only checks the file's size (`head_blob`); the worker downloads it and deletes it when the job ends. |
+| Worker | `app/ingestion.py` (pipeline, failure mapping, `process_job`) and `app/worker.py` (Celery app: Redis broker, queue `documind`, `acks_late`, prefetch 1, no results backend, fast failure when Redis is down). Image from `backend/Dockerfile`; `redis` and `worker` services in `docker-compose.yml`. |
+| Reliability | Retries only for timeouts, connection errors and rate limits: 3 attempts, 10 s then 20 s (or `Retry-After`, capped at 300 s). The document, its chunks and the job's end are saved in one transaction; if the job has already ended (a duplicate delivery) nothing is saved. Risks 1 (AI client per event loop), 2 (engines reset in each worker process), 5 (limit in the backend) and 8 (the worker deletes the Blob when the job ends) are handled; the periodic blob cleanup and risk 9 (summary input cap) are not. |
+| Limit | At most 3 running uploads per user, enforced in the backend in both modes (inline uploads create a job too), under a per-user advisory lock; a job unchanged for 15 minutes isn't counted. 429 with `"code": "upload_limit"`. |
+| Frontend | `DocumentsContext.tsx` polls `/jobs/{id}` every 1.5 s after a 202 ("Pending" while queued, "Summarizing" while the worker has it); the SSE path is unchanged. |
+| Checks | 654 backend tests (new: `test_queue_ingestion.py`, a migration test); `tsc`, lint. By hand against real Redis and Postgres with the AI calls faked: 3 uploads accepted, the 4th refused (429), jobs completed, a slot freed, the UI went Pending → Completed; the Compose worker container processed a job and failed it safely with `ai_not_configured` (its AI key was blanked, so no paid calls). Not run: a real upload through the worker with the paid provider. |
+
 ### Step 2 as built (branch `phase3/step-2`)
 
 | Area | What was built |
@@ -444,16 +457,16 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 
 ## 10. Acceptance Criteria — Definition of Done
 
-- [ ] Uploading a document returns quickly with a job ID; processing happens in a worker, and job states transition correctly.
-- [ ] The worker runs the full ingestion pipeline; a document is never saved without its chunks.
-- [ ] Retries do not cause duplicate documents, chunks or charges; only transient failures are retried.
-- [ ] At most 3 files upload at the same time per user; stored documents are unlimited.
+- [x] Uploading a document returns quickly with a job ID; processing happens in a worker, and job states transition correctly. (Steps 3+4)
+- [x] The worker runs the full ingestion pipeline; a document is never saved without its chunks. (Steps 3+4)
+- [x] Retries do not cause duplicate documents, chunks or charges; only transient failures are retried. (Steps 3+4; a retried attempt repeats that attempt's provider calls, so a retried job can cost more than once)
+- [x] At most 3 files upload at the same time per user; stored documents are unlimited. (Steps 3+4)
 - [ ] Chat still streams over SSE and searches only the user's documents.
 - [ ] A user cannot read, search, delete or see usage for another user's data, even by changing IDs in requests.
 - [ ] All schema changes are Alembic migrations, applied in production.
 - [ ] Caches work with TTL and invalidation; hits/misses and impact are measured; flushing Redis loses no data.
 - [ ] Flower shows the worker's tasks; `/metrics` returns the app's numbers only with the token; logs contain no secrets or document contents.
-- [ ] The full setup (Postgres, Redis, worker) runs locally with Docker Compose in `INGESTION_MODE=queue`, and the Vercel deployment keeps working in `INGESTION_MODE=inline`.
+- [x] The full setup (Postgres, Redis, worker) runs locally with Docker Compose in `INGESTION_MODE=queue`, and the Vercel deployment keeps working in `INGESTION_MODE=inline`. (Steps 3+4: inline is the default and its tests pass; not yet redeployed to Vercel)
 - [ ] One Locust scenario (fake LLM mode) has run, with a short report of real measurements.
 - [ ] The Phase 2 eval suite still passes at or above its baseline.
 - [x] The app makes no hidden retries: SDK retries are off, and every retry is the app's own and is counted. (Step 0)
@@ -485,9 +498,9 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [x] Production hosting for Redis and the worker: deferred (revision 5); local Docker Compose, Vercel in `INGESTION_MODE=inline`.
 
 ### Processing and reliability
-- [ ] Redis + Celery + worker.
-- [ ] Queue-based ingestion with the full pipeline, job status and polling.
-- [ ] Retries, backoff and idempotency.
+- [x] Redis + Celery + worker. (Steps 3+4)
+- [x] Queue-based ingestion with the full pipeline, job status and polling. (Steps 3+4)
+- [x] Retries, backoff and idempotency. (Steps 3+4)
 
 ### Data and security
 - [x] Alembic migrations and ownership columns. (Step 2)
@@ -495,7 +508,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [ ] Redis caches with TTL and invalidation, measured.
 
 ### Delivery and verification
-- [ ] Docker Compose with Postgres, Redis and the worker; `INGESTION_MODE` (`queue` / `inline`).
+- [x] Docker Compose with Postgres, Redis and the worker; `INGESTION_MODE` (`queue` / `inline`). (Steps 3+4)
 - [ ] Monitoring: Flower, `/metrics`, existing logs.
 - [ ] One Locust scenario (fake LLM mode) and a short report.
 - [ ] Phase 2 evals still at or above baseline.
@@ -528,4 +541,4 @@ Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob auth
 
 The Phase 3 learning areas and production-project requirements come from the *Junior AI Engineer Development Plan*. The current-state baseline comes from the Phase 2 codebase and `docs/design.md`. The Redis + Celery choice, the API contracts, data entities, implementation order and acceptance criteria are implementation proposals agreed with the user. My AI Analytics is an optional extension beyond the plan's requirements.
 
-**Next action:** Steps 0–2 are done and merged. Next is Steps 3+4 (Redis, Celery worker and queue ingestion), within the reduced scope in "Current Scope" at the top.
+**Next action:** Steps 0–2 are merged. Steps 3+4 are built on `phase3/queue-ingestion` and wait for review and merge. Then Step 6 (Redis cache), Step 7 (Flower, `/metrics`) and Step 10 (one Locust scenario with the fake LLM), within the reduced scope in "Current Scope" at the top.

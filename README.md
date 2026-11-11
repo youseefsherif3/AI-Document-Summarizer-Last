@@ -213,6 +213,38 @@ python -m evals.run_evals --mode answers --skip-arabic-pdf
 A stopped run continues with `--resume <run-id>`; reports go to `backend/evals/reports/`.
 Details: [`backend/evals/README.md`](backend/evals/README.md).
 
+## Background worker (queue mode)
+
+`INGESTION_MODE` chooses how an upload is processed:
+
+- `inline` (the default; what Vercel uses): the upload is processed inside the request and the
+  summary streams to the page as it is written. No Redis and no worker are needed.
+- `queue`: the upload is stored as a **job** and the request returns `202` with the job id at
+  once. A Celery worker (Redis is the queue) does the whole ingestion: read the file, write the
+  summary and embed the chunks at the same time, then save the document, its chunks and the
+  job's end in one transaction. The page checks `GET /jobs/{id}` every 1.5 s ("Pending" while
+  the job waits, "Summarizing" while the worker has it) and shows the whole summary when the job
+  completes. Chat streams as before and never goes through the queue.
+
+Try it locally (from the project root; the database must be migrated, see below):
+
+```bash
+docker compose up -d --build        # Postgres, Redis and the worker
+```
+
+Then set `INGESTION_MODE=queue` in `backend/.env` (and `REDIS_URL=redis://127.0.0.1:6379/0`,
+which is the default), restart `uvicorn` and `npm run dev`, sign in and upload a file. Watch the
+worker with `docker compose logs -f worker` (`job_started`, `job_completed`, `job_retry`,
+`job_failed` lines). The worker uses the AI settings in `backend/.env`, so a real upload makes
+real (paid) AI calls.
+
+Job states are `pending` → `processing` → `completed` or `failed`. Only temporary provider
+failures (timeout, no connection, rate limit) are retried, up to 3 attempts in all, waiting 10
+and then 20 seconds (or the provider's `Retry-After`); a failed job keeps a safe error code and
+message (`GET /jobs/{id}`). A task that is delivered twice does nothing the second time. A
+user can have at most 3 uploads running at the same time, in both modes (429 with
+`"code": "upload_limit"`); a job that has not changed for 15 minutes no longer counts.
+
 ## Database commands
 
 From the project root:
