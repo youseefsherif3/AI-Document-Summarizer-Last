@@ -1,0 +1,39 @@
+# Load-test stack, added on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml up -d --build
+# It adds the API (as a container, with several processes) and puts the API and the worker in
+# FAKE LLM mode on a separate database (docsum_load). No AI key is passed to either: the keys
+# are blanked here, whatever backend/.env says, so no real AI call can be made.
+x-loadtest-env: &loadtest-env
+  DATABASE_URL: postgresql://docsum:docsum@db:5432/docsum_load
+  REDIS_URL: redis://redis:6379/0
+  INGESTION_MODE: queue
+  FAKE_LLM: "true"
+  AI_API_KEY: ""
+  OPENROUTER_API_KEY: ""
+  AI_BASE_URL: ""
+  CACHE_ENABLED: "false"        # measure the work itself, not cache hits
+  DAILY_UPLOAD_LIMIT: "0"       # the load test uploads far more than a person would
+  DAILY_CHAT_LIMIT: "0"
+  METRICS_TOKEN: loadtest-token
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+
+services:
+  api:
+    build: ./backend
+    container_name: docsum-api
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "${API_WORKERS:-2}"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      <<: *loadtest-env
+      ALLOWED_ORIGINS: http://localhost:3000
+      CORS_ORIGINS: http://localhost:3000
+
+  worker:
+    environment:
+      <<: *loadtest-env

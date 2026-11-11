@@ -305,6 +305,15 @@ docker exec docsum-redis redis-cli -n 1 flushdb       # empty the cache
   API (inline uploads) and in the worker, including the `ai_usage` and `ai_retry` lines. Search
   for the id to follow one upload: `docker compose logs worker | grep <job id>`.
 
+## Load test
+
+`loadtest/` has one Locust scenario (signed-in users list documents, upload in queue mode and wait
+for the job, ask chat questions) that runs against the local Docker stack with the **fake LLM**
+(`FAKE_LLM=true`): no AI provider is called and nothing is spent, and the test refuses to run
+unless the backend says it is in fake mode. How to run it, and what it does and doesn't measure:
+[`loadtest/README.md`](loadtest/README.md). The last results and the bottleneck found (the worker's
+`WORKER_CONCURRENCY`, default 2): [`docs/load-test-report.md`](docs/load-test-report.md).
+
 ## Database commands
 
 From the project root:

@@ -438,6 +438,17 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | Frontend | `DocumentsContext.tsx` polls `/jobs/{id}` every 1.5 s after a 202 ("Pending" while queued, "Summarizing" while the worker has it); the SSE path is unchanged. |
 | Checks | 654 backend tests (new: `test_queue_ingestion.py`, a migration test); `tsc`, lint. By hand against real Redis and Postgres with the AI calls faked: 3 uploads accepted, the 4th refused (429), jobs completed, a slot freed, the UI went Pending → Completed; the Compose worker container processed a job and failed it safely with `ai_not_configured` (its AI key was blanked, so no paid calls). Not run: a real upload through the worker with the paid provider. |
 
+### Step 10 as built (branch `phase3/load-test`, from `phase3/monitoring`)
+
+| Area | What was built |
+|---|---|
+| Dependency | `locust==2.43.3` in `backend/requirements-dev.txt` (approved); not in the deployed requirements. |
+| Fake LLM mode | `FAKE_LLM=true` (`app/services/fake_llm.py`): a stand-in for the AI client, so retries, usage logging, `ai_usage` rows, chunk embedding and streaming all run for real. No network, no key. Refused on Vercel, announced at startup (API and worker), `/health` reports it, evals force it off. `FAKE_LLM_DELAY_SCALE` scales the delays (tests use 0). |
+| Load-test stack | `loadtest/docker-compose.loadtest.yml` (API container with `API_WORKERS`, worker with `WORKER_CONCURRENCY`, keys blanked, separate database `docsum_load`, cache and daily limits off); `seed_users.py` (local `*_load` databases only); `locustfile.py` (list documents / upload and wait for the job / chat, one scenario); `run_sweep.py` (several user counts, queue and container CPU sampling, summary table). |
+| Safety | The Locust file refuses to run unless the host is this machine, `/health` says `fake_llm`, and the first finished summary has the fake marker. |
+| Results | `docs/load-test-report.md`: no errors up to 100 users; the worker's concurrency is the first bottleneck (50 users: upload→done p50 26 s at 2 processes, 3.1 s at 8); next the API process (54 % CPU avg at 100 users). Fixes: `WORKER_CONCURRENCY` setting (measured), job polling backoff (proposed). |
+| Checks | 769 backend tests (26 new in `test_fake_llm.py`, which also proves the real AI client is never created in fake mode). Runs by hand: 5/20/50 users and 50/100 users with 8 worker processes, 60 s each, zero failed requests. No paid calls at any point. |
+
 ### Step 7 as built (branch `phase3/monitoring`, from `phase3/redis-cache`)
 
 > **Before merging and deploying:** production needs **`0004_processing_jobs` and `0005_ai_usage`** (both from `alembic upgrade head`) before this code runs; same order as above (backup branch, migrate, deploy straight after).
@@ -494,7 +505,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [x] Caches work with TTL and invalidation; hits/misses are logged and counted (impact on cost not measured with real numbers yet); flushing Redis loses no data. (Step 6)
 - [x] Flower shows the worker's tasks; `/metrics` returns the app's numbers only with the token; logs contain no secrets or document contents. (Step 7)
 - [x] The full setup (Postgres, Redis, worker) runs locally with Docker Compose in `INGESTION_MODE=queue`, and the Vercel deployment keeps working in `INGESTION_MODE=inline`. (Steps 3+4: inline is the default and its tests pass; not yet redeployed to Vercel)
-- [ ] One Locust scenario (fake LLM mode) has run, with a short report of real measurements.
+- [x] One Locust scenario (fake LLM mode) has run, with a short report of real measurements. (Step 10: docs/load-test-report.md)
 - [ ] The Phase 2 eval suite still passes at or above its baseline.
 - [x] The app makes no hidden retries: SDK retries are off, and every retry is the app's own and is counted. (Step 0)
 
@@ -537,7 +548,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 ### Delivery and verification
 - [x] Docker Compose with Postgres, Redis and the worker; `INGESTION_MODE` (`queue` / `inline`). (Steps 3+4)
 - [x] Monitoring: Flower, `/metrics`, job ids in the logs. (Step 7; plus the `ai_usage` table)
-- [ ] One Locust scenario (fake LLM mode) and a short report.
+- [x] One Locust scenario (fake LLM mode) and a short report. (Step 10)
 - [ ] Phase 2 evals still at or above baseline.
 - [ ] Documentation updated (README, CLAUDE.md, docs/design.md).
 

@@ -4,3 +4,5 @@ httpx==0.28.1
 # Eval corpus generation only (evals/build_corpus.py): PDFs, incl. shaped Arabic text.
 fpdf2==2.9.0
 uharfbuzz==0.57.0
+# Load tests (loadtest/).
+locust==2.43.3

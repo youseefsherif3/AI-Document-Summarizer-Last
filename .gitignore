@@ -60,3 +60,7 @@ next-env.d.ts
 
 # local dev-server config for Claude Code previews
 .claude/launch.json
+
+# load test output (loadtest/)
+/loadtest/users.json
+/loadtest/results/
