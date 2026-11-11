@@ -217,8 +217,8 @@ Details: [`backend/evals/README.md`](backend/evals/README.md).
 
 `INGESTION_MODE` chooses how an upload is processed:
 
-- `inline` (the default; what Vercel uses): the upload is processed inside the request and the
-  summary streams to the page as it is written. No Redis and no worker are needed.
+- `inline` (the default, and the rollback for production): the upload is processed inside the
+  request and the summary streams to the page as it is written. No Redis and no worker are needed.
 - `queue`: the upload is stored as a **job** and the request returns `202` with the job id at
   once. A Celery worker (Redis is the queue) does the whole ingestion: read the file, write the
   summary and embed the chunks at the same time, then save the document, its chunks and the
@@ -246,6 +246,46 @@ user can have at most 3 uploads running at the same time, in both modes (429 wit
 `"code": "upload_limit"`). A job that has not changed for 15 minutes (the worker died, or Vercel
 stopped an inline upload at its time limit) is dead: it is marked `failed` (`timed_out`) the next
 time its owner uploads or asks for it, and never counts toward the limit.
+
+### In production (Upstash + Azure Container Apps)
+
+Production runs **`INGESTION_MODE=queue`** since 2026-11-11. The API stays on Vercel; Redis is
+**Upstash** (AWS us-east-2, TLS) and the Celery worker is an **Azure Container Apps** app in East US 2
+that Azure scales to **zero replicas** when the queue is empty and starts when a job arrives (KEDA
+checks the queue every 30 s, so the first upload after idle waits for a cold start; not measured yet).
+The browser uploads to Vercel Blob as before; the worker downloads the file, runs the job and deletes
+the blob. Details, costs, the things that went differently and the exact commands:
+[`docs/phase3-plan.md`](docs/phase3-plan.md), section 14.
+
+- **Worker image:** `ghcr.io/youseefsherif3/documind-worker:a9f1ccf` (public GHCR package, built from
+  `backend/Dockerfile`; the tag is the git SHA it was built from).
+- **Azure names:** resource group `documind-rg`, environment `documind-env`, app `documind-worker`.
+- **Upstash:** use the **full-access** Redis (TCP) URL, with `?ssl_cert_reqs=required`. The read-only token
+  gives `NoPermissionError` at the first write (PING still works, so a ping does not prove write access).
+
+**Deploy a new worker image** (needed when the ingestion code, `worker.py`, `jobs.py` or the schema change;
+the worker has its own copy of the code; with a migration: migrate, then the worker, then the backend):
+
+```powershell
+Set-Location C:\Users\ysher\Downloads\AI-Document-Summarizer-master
+git status --porcelain                      # must print nothing
+$tag = git rev-parse --short HEAD; $image = "ghcr.io/youseefsherif3/documind-worker:$tag"
+docker build -t documind-worker:check -t $image --label "org.opencontainers.image.source=https://github.com/youseefsherif3/AI-Document-Summarizer-Last" --label "org.opencontainers.image.revision=$tag" .\backend
+# list the image's files to prove there is no .env (docs/phase3-plan.md 14.9, step B), then:
+$token = Read-Host "GitHub token (classic, write:packages)" -AsSecureString   # never typed on the command line
+[System.Net.NetworkCredential]::new("", $token).Password | docker login ghcr.io -u youseefsherif3 --password-stdin
+docker push $image; docker logout ghcr.io
+az containerapp update -n documind-worker -g documind-rg --image $image
+az containerapp logs show -n documind-worker -g documind-rg --follow     # expect: Connected to rediss://…, ready
+```
+
+Roll the worker back by running `az containerapp update … --image ghcr.io/youseefsherif3/documind-worker:a9f1ccf`
+(or any earlier tag). A changed Azure secret needs a revision restart (`az containerapp revision restart`).
+
+**Roll production back to inline uploads, in one step:** in the Vercel **backend** project delete
+`INGESTION_MODE` (or set it to `inline`) and **redeploy** (a changed variable only applies to a new
+deployment). The frontend needs no change. Let the worker drain first (it goes to zero by itself); if Redis
+is the problem, queued jobs fail as `timed_out` after 15 minutes and the users upload again.
 
 ## Redis cache
 
@@ -387,6 +427,16 @@ the app allows files up to 10 MB, so the browser uploads the file to a private B
 backend reads it from there (`NEXT_PUBLIC_VERCEL_BLOB_UPLOADS=true`). Create one **private** Blob
 store and connect it to **both** projects; that adds `BLOB_READ_WRITE_TOKEN` to each.
 
+### Production URLs
+
+- Frontend: **https://ai-doc-summarize.vercel.app**
+- Backend: **https://ai-doc-summarizer-api.vercel.app**
+
+The frontend project's `BACKEND_URL` must be the backend URL (read at build time: redeploy the frontend after changing
+it), and the **backend project's `CORS_ORIGINS` (and `ALLOWED_ORIGINS`, if set) must include the frontend URL**
+`https://ai-doc-summarize.vercel.app`. Requests that change something (sign-in, upload, chat, delete) from an origin that is not listed are
+refused with 403. Remove an old frontend URL from those lists when the frontend moves.
+
 ### Environment variables
 
 Frontend project:
@@ -423,11 +473,11 @@ Backend project:
 | `QUERY_REWRITE_MODEL` | optional, default: the chat model |
 | `AI_PRICES_PER_MILLION_TOKENS` | optional JSON, used only to estimate cost when OpenRouter returns none |
 | `RECORD_AI_USAGE` | optional, default on: every AI call is recorded per user in the `ai_usage` table (needs migration 0005). Best effort on Vercel: a function frozen right after its response may lose its last rows. `false` turns it off |
+| `INGESTION_MODE` | **production: `queue`** (uploads go to the Azure worker; see "In production" above). Unset means `inline`, the one-step rollback. Needs `REDIS_URL` and a running worker |
+| `CACHE_ENABLED` | **production: `false`.** The Redis cache is on by default whenever a Redis URL exists, and the backend now has `REDIS_URL`; left on it would cache embeddings in Upstash (about 30 KB each, against the free 250 MB, plus a command per lookup) and try Redis database 1, which Upstash's single-database plan may refuse (`cache_unavailable` warnings, never a failed request). The worker has it set too |
+| `REDIS_URL` | **production:** Upstash's full-access `rediss://default:<token>@<host>:6379?ssl_cert_reqs=required` (secret). The same value as the worker's. Without it the API cannot enqueue (uploads answer 503) |
 
-**Leave these unset (or absent) on Vercel**, so uploads stay inline with no Redis: `INGESTION_MODE`
-(unset means `inline`; `queue` would send uploads to a worker that doesn't exist there),
-`REDIS_URL` and `CACHE_REDIS_URL` (without a Redis URL the cache is off and never contacted),
-`CACHE_ENABLED` and the `CACHE_*_TTL_SECONDS` settings (no effect without Redis),
+**Leave these unset (or absent) on Vercel:** `CACHE_REDIS_URL` and the `CACHE_*_TTL_SECONDS` settings,
 `METRICS_TOKEN` (unset keeps `/metrics` off with a 404; it is system-wide), `WORKER_CONCURRENCY`
 (worker only), and **`FAKE_LLM`, which must never be set**: the app refuses to start on Vercel with
 it on, and it would replace real answers with fake ones anywhere else.
@@ -453,11 +503,12 @@ checks at startup that the database is at the newest migration (and that stored 
 
 **Migrations 0004 (upload jobs) and 0005 (AI usage) must be applied before the code that uses them is
 deployed.** The backend refuses to start unless the database is at the newest revision, so run
-`python -m alembic upgrade head` (it adds the `processing_jobs` and `ai_usage` tables; production is
-at `0003_document_owner`) after the Neon backup branch and **right before** deploying the backend.
+`python -m alembic upgrade head` (it adds the `processing_jobs` and `ai_usage` tables; production has been at
+`0005_ai_usage` since 2026-11-11, so a release without a new migration needs none) after the Neon backup branch and **right before** deploying the backend.
 The revision check works both ways: until the new backend is live, the *old* backend (which
 expects `0003`) refuses to start on a migrated database, so deploy straight after migrating. In
-production `INGESTION_MODE` stays unset (`inline`); no Redis or worker is needed.
+production `INGESTION_MODE=queue` runs with the Azure worker ("In production" above); a release that changes the
+ingestion code or the schema also needs a new worker image, deployed before the backend.
 
 **Never run `alembic downgrade` on production** (the baseline's downgrade drops all tables).
 To roll back, redeploy the previous backend and, if the data must go back too, restore the
@@ -496,7 +547,9 @@ The backend disables server-side prepared statements, so Neon's pooled connectio
 5. Set the backend's `CORS_ORIGINS` to the frontend's URL and redeploy the backend. Until
    then, sign-in, uploads and chat are refused (403), because the `Origin` check doesn't know
    the frontend yet.
-6. Check in the browser: register an account, then claim the existing documents (above). Upload
+6. Production only, once: create the Upstash database and the Azure worker, then set `INGESTION_MODE=queue` and
+   `REDIS_URL` on the backend and redeploy it ("In production" above and `docs/phase3-plan.md` §14).
+7. Check in the browser: register an account, then claim the existing documents (above). Upload
    a small TXT and a PDF over 4.5 MB, ask a question on the Chat page and get an answer with
    citations, delete a document, sign out and back in. A second account must see none of the
    first account's documents. The backend's Vercel logs show one `ai_usage` line per AI call.

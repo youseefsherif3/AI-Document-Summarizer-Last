@@ -4,7 +4,7 @@
 **Document purpose:** Scope definition and implementation plan for review
 **Project:** DocuMind — AI Document Summarizer & Chat with your Docs (RAG)
 **Date:** November 2026
-**Revision:** 5 (scope reduced to the production-project requirements; Steps 3 and 4 merged; monitoring decided; Azure deferred; `INGESTION_MODE`)
+**Revision:** 6 (revision 5's scope, all built and live; the production queue worker on Upstash + Azure Container Apps, §14; new production URLs)
 
 > **Important:** This document describes the agreed target implementation. It does not mean that the listed components have already been implemented.
 
@@ -15,22 +15,22 @@ To save time, Phase 3 now builds only what the production project asks for: **ba
 | Step | Status |
 |---|---|
 | 0, 1, 2 | Done (merged into `main`; production migrated) |
-| 3+4. Redis, Celery worker and queue ingestion | **Built on branch `phase3/queue-ingestion` (not merged yet; see "Steps 3+4 as built").** Kept, as one part: Redis and the worker in Docker Compose, the job table, queue ingestion and the `INGESTION_MODE` setting (below). `content_hash` is **dropped** |
+| 3+4. Redis, Celery worker and queue ingestion | **Done: merged, live in production (see "Steps 3+4 as built" and §14).** Kept, as one part: Redis and the worker in Docker Compose, the job table, queue ingestion and the `INGESTION_MODE` setting (below). `content_hash` is **dropped** |
 | 6. Caching | **Kept, Redis cache only** (§6.2). The database review (indexes, connection pooling) is dropped |
 | 7. Monitoring | **Kept, decided:** Flower for the worker, a `/metrics` endpoint, and the existing structured logs. No OpenTelemetry, no Langfuse |
 | 10. Load testing | **Kept, small:** one Locust scenario against the fake LLM mode, and one short report |
 | 4b. Backfill | **Dropped:** production has no documents, so nothing needs chunks |
 | 5. LLM production layer | **Dropped** (persisted usage, fallback models, circuit breaker, graceful degradation) |
 | 8. CI/CD | **Dropped** |
-| 9. Production deployment on Azure | **Deferred.** No Azure resources are created in Phase 3 |
+| 9. Production deployment on Azure | **Partly done (revision 6):** only the Celery worker runs on Azure Container Apps, with Redis on Upstash (§14, as built in 14.11). The API, database and Blob stay on Vercel and Neon |
 | 11. My AI Analytics | **Dropped** |
 
-**Local setup instead of Azure.** The full queue setup runs locally with Docker Compose: Postgres + pgvector (existing), Redis and the Celery worker.
+**Local setup.** The full queue setup runs locally with Docker Compose: Postgres + pgvector (existing), Redis and the Celery worker. Since revision 6 production runs queue mode too (§14).
 
 **`INGESTION_MODE` (`queue` or `inline`).** A backend setting chosen per deployment:
 
-- `queue`: the upload stores the file, creates a job, enqueues it and returns `202`; the worker runs the ingestion (§6.1). Used locally with Docker Compose.
-- `inline`: today's upload flow, unchanged (one streaming request with the summary over SSE). The Vercel deployment uses it, so it keeps working without a worker or Redis.
+- `queue`: the upload stores the file, creates a job, enqueues it and returns `202`; the worker runs the ingestion (§6.1). Used locally with Docker Compose and, since 2026-11-11, in production (Upstash + the Azure worker, §14).
+- `inline`: the original upload flow (one streaming request with the summary over SSE). It is the default and the one-step rollback for production (§14.11); the Vercel deployment used it until 2026-11-11.
 
 The default is `inline`, so a deployment that doesn't set it behaves as today. The backend's concurrent-upload limit applies in both modes; duplicate detection stays in the browser (no `content_hash`). How the frontend learns the mode (so it either reads the SSE stream or polls the job) is decided in Step 4, without a second setting that could disagree with the backend.
 
@@ -105,13 +105,13 @@ Phase 3 builds on a working, deployed application. The following already exists 
 | Authentication | **Decided:** own email + password (Argon2id or bcrypt), session in an `httpOnly` `Secure` cookie, no external provider (see §4.1). The cross-domain cookie approach is chosen at the start of Step 2. |
 | Queue / background jobs | Redis + Celery |
 | Cache | Redis, logically separate from the queue (separate key prefixes or DB numbers) |
-| Worker + Redis hosting (production) | **Deferred** (revision 5). Locally, Redis and the worker run in Docker Compose; the Vercel deployment uses `INGESTION_MODE=inline` and needs neither. The earlier choice (Azure Container Apps + Azure Managed Redis, §4.2) is kept for later. |
+| Worker + Redis hosting (production) | **Revision 6: built (§14): Upstash Redis + Azure Container Apps worker, scale to zero.** Earlier text (revision 5, superseded): Locally, Redis and the worker run in Docker Compose; the Vercel deployment uses `INGESTION_MODE=inline` and needs neither. The earlier choice (Azure Container Apps + Azure Managed Redis, §4.2) is kept for later. |
 | LLM observability | Langfuse (**dropped** in revision 5) |
 | Tracing | OpenTelemetry (**dropped** in revision 5) |
 | Monitoring | **Decided (revision 5):** Flower for the Celery worker, a `/metrics` endpoint, and the existing structured `key=value` logs (`ai_usage`, `ai_retry`, …) |
 | Testing | Pytest + Locust (one scenario, with a fake LLM mode) |
 | CI/CD | GitHub Actions (**dropped** in revision 5) |
-| Cloud | Azure fundamentals are intentionally skipped because the user already knows Azure. Hosting the worker and Redis on Azure is deferred (revision 5). |
+| Cloud | Azure fundamentals are intentionally skipped because the user already knows Azure. Hosting the worker and Redis was deferred in revision 5 and built in revision 6: the worker runs on Azure Container Apps (§14). |
 
 ### Constraints
 
@@ -182,9 +182,9 @@ Conclusions: chat keeps streaming token by token through the rewrite, so the fal
 
 **Existing data (decided):** documents uploaded before auth have no owner and are visible to nobody. After registering, the user assigns them to their account with a one-off command run by hand: `python -m app.claim_documents --email … --dry-run`, then without `--dry-run`. Registration never assigns documents.
 
-### 4.2 Production hosting for Redis and the worker (deferred)
+### 4.2 Production hosting for Redis and the worker (superseded by §14)
 
-> **Deferred in revision 5.** Nothing in this section is built in Phase 3; it is kept for later. Production runs with `INGESTION_MODE=inline`.
+> **Superseded in revision 6 by §14.** This was the first idea (Azure Container Apps + Azure Managed Redis); what was built uses **Upstash** for Redis (cheaper, free trial) and the same Azure Container Apps worker. Production runs `INGESTION_MODE=queue` since 2026-11-11. Kept for the reasoning.
 
 Vercel functions stop after each response (at most 300 s on Hobby, 800 s on Pro), with no persistent processes and no built-in Redis, so **a Celery worker cannot run on Vercel**. Enqueuing from the API is fine there (one Redis write per request).
 
@@ -419,7 +419,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | **6. Caching** | Redis caches from §6.2 with TTL and invalidation; measure hits and impact. (The database review is dropped.) |
 | **7. Monitoring** | Flower in Docker Compose, `/metrics` behind a token, job IDs in the existing logs (§6.3). |
 | ~~**8. CI/CD**~~ | **Dropped** (revision 5). |
-| ~~**9. Production deployment**~~ | **Deferred** (revision 5): no Azure resources in Phase 3. The full setup runs locally with Docker Compose; Vercel keeps `INGESTION_MODE=inline`. |
+| **9. Production deployment** | **Partly built (revision 6, §14):** the worker on Azure Container Apps and Redis on Upstash; production runs `INGESTION_MODE=queue`. (Revision 5 had deferred it: no Azure in Phase 3, Vercel kept `inline`.) |
 | **10. Load testing** | Fake LLM mode; one Locust scenario against the local Docker Compose setup; one short report (§6.3). |
 | ~~**11. (Optional) My AI Analytics**~~ | **Dropped** (revision 5). |
 
@@ -503,6 +503,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [ ] A user cannot read, search, delete or see usage for another user's data, even by changing IDs in requests.
 - [ ] All schema changes are Alembic migrations, applied in production.
 - [x] Caches work with TTL and invalidation; hits/misses are logged and counted (impact on cost not measured with real numbers yet); flushing Redis loses no data. (Step 6)
+- [x] Production runs the queue: Upstash Redis + an Azure Container Apps worker (scale to zero), checked with a small TXT and a PDF over 4.5 MB through Blob, and chat. (§14.11)
 - [x] Flower shows the worker's tasks; `/metrics` returns the app's numbers only with the token; logs contain no secrets or document contents. (Step 7)
 - [x] The full setup (Postgres, Redis, worker) runs locally with Docker Compose in `INGESTION_MODE=queue`, and the Vercel deployment keeps working in `INGESTION_MODE=inline`. (Steps 3+4: inline is the default and its tests pass; not yet redeployed to Vercel)
 - [x] One Locust scenario (fake LLM mode) has run, with a short report of real measurements. (Step 10: docs/load-test-report.md)
@@ -533,7 +534,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [x] Cross-domain cookie option chosen (§4.1): A, the `/api` rewrite, confirmed by the spike.
 - [x] Handling of existing documents without an owner decided: the `claim_documents` command, run by hand after registering.
 - [x] Upload experience without live summary streaming accepted (§4.3); chat streaming unchanged.
-- [x] Production hosting for Redis and the worker: deferred (revision 5); local Docker Compose, Vercel in `INGESTION_MODE=inline`.
+- [x] Production hosting for Redis and the worker: Upstash + Azure Container Apps (revision 6, §14); local Docker Compose for development; `inline` kept as the rollback.
 
 ### Processing and reliability
 - [x] Redis + Celery + worker. (Steps 3+4)
@@ -573,12 +574,12 @@ Things in the current code that would make the queue, workers, auth or caching h
 
 Known issues from CLAUDE.md that matter for Phase 3: no auth (Step 2); Blob authorization that only compares Origin and Host headers, which any script can fake (Step 2: the upload-token route requires a signed-in user); orphaned blobs (risk 8); documents without chunks (§6.1b, dropped: production has none); the 4.5 MB request limit (still applies, Blob stays) and the 300 s limit (no longer applies to ingestion once it runs in the worker); the lint failure (Step 0); Arabic PDFs (expected failures in the eval gate, not a regression).
 
-## 14. Production queue worker (Upstash Redis + Azure Container Apps), plan approved 2026-11-11
+## 14. Production queue worker (Upstash Redis + Azure Container Apps), built and live 2026-11-11
 
-Phase 3 runs in production with `INGESTION_MODE=inline`: an upload is processed inside the Vercel request
+Until 2026-11-11 production ran with `INGESTION_MODE=inline`: an upload is processed inside the Vercel request
 (300 s limit on Hobby), with the summary streaming to the page. Queue mode (Redis + Celery worker, `202` +
 job id + polling) works locally, was load-tested (§ "Step 10 as built") and passed a real upload through
-SovereignEG. This section is the plan to run it in production. It supersedes the "Step 9 deferred" note for
+SovereignEG. This section is the plan that was used to run it in production (approved the same day); 14.11 records what was built and what differed. It supersedes the "Step 9 deferred" note for
 the worker and Redis only; the API stays on Vercel. Research checked 2026-11-11 against: Upstash pricing and
 billing pages and its Celery guide, Azure Container Apps scaling, lifecycle and billing pages, the KEDA
 Redis-list scaler page, Celery's Redis broker page, Neon's pooling and auto-suspend pages, and the installed
@@ -650,7 +651,7 @@ values from the Vercel backend project instead of retyping them. In Container Ap
 secrets, referenced with `secretref:`.
 
 **Vercel backend project (production):** add `INGESTION_MODE=queue` and `REDIS_URL` (the worker's value).
-Everything else stays; still no `CACHE_*`, `FAKE_LLM`, `METRICS_TOKEN`, `WORKER_CONCURRENCY`. An environment
+Also set **`CACHE_ENABLED=false`**: the cache is on by default whenever a Redis URL exists (`app/cache.py`), so adding `REDIS_URL` switches it on; this plan first said to leave `CACHE_*` unset, which was wrong once `REDIS_URL` is set (found while writing 14.11). Everything else stays; still no `FAKE_LLM`, `METRICS_TOKEN`, `WORKER_CONCURRENCY`. An environment
 change only applies to a **new deployment**: every change needs a redeploy. Function region: keep it in the
 US East area (the default `iad1`, Washington DC, is next to Ohio).
 
@@ -970,10 +971,77 @@ page shows the calls.
 4. You run F in a quiet hour; we verify together; rollback is ready.
 5. I record the measured numbers and what was built here, in the README deployment section and in `CLAUDE.md`.
 
+### 14.11 As built (2026-11-11)
+
+The plan above was followed except where this section says otherwise. **Live and verified in production.**
+
+| What | As built |
+|---|---|
+| Image | `ghcr.io/youseefsherif3/documind-worker:a9f1ccf` (tag = the git SHA the image was built from, on branch `phase3/prod-worker`). Built from `backend/Dockerfile` with the labels `org.opencontainers.image.source` (the repository) and `…revision`. Checked before the push: 36 files under `/srv/backend`, no `.env`, key, certificate or `users.json` anywhere in the image. The GHCR package is **public** (a public repository does not make its package public: the first push creates it private, and the visibility was switched once). Azure pulls it with no credentials. |
+| Azure | East US 2 (`eastus2`), Container Apps **Consumption**: resource group `documind-rg`, environment `documind-env`, app `documind-worker`; 0.5 vCPU / 1 GiB; **max replicas 1**; `min replicas 1` for the smoke test, **now 0**. KEDA scale rule `queue-length` (type `redis`, list `documind`, `listLength=1`, TLS on, the Upstash token in the app secret `redis-password`). App secrets: `database-url`, `redis-url`, `redis-password`, `blob-token`, `ai-api-key`; the other settings as plain environment variables (14.3). No ingress. |
+| Redis | Upstash, AWS us-east-2, TLS on, **free trial** (it moves to a paid plan later). `UPSTASH_REDIS_URL` in `backend/.env` is the full-access URL. |
+| Vercel backend (Production) | `INGESTION_MODE=queue` and `REDIS_URL` (the `rediss://` URL with `?ssl_cert_reqs=required`); deployed by pushing `main` (`559d0c9`). No `METRICS_TOKEN`, `FAKE_LLM`. **`CACHE_ENABLED=false` is needed here too** (see 14.3): the backend has `REDIS_URL`, so the cache is on unless it is set; it was not part of the steps given, so **check that it is set on the Vercel backend project** (not verified here). The frontend needed no change. |
+| Production URLs (changed on 2026-11-11) | Frontend **https://ai-doc-summarize.vercel.app**; backend **https://ai-doc-summarizer-api.vercel.app**. The frontend's `BACKEND_URL` must be the backend URL (read at build time, so redeploy the frontend after changing it) and the **backend's `CORS_ORIGINS` (and `ALLOWED_ORIGINS`, if set) must include the new frontend URL**, or sign-in, uploads and chat are refused with 403 (the `Origin` check). The earlier production URLs were never written into the docs, so there was nothing to replace. |
+| Verified | A small TXT and a PDF over 4.5 MB (the Blob path) went through Upstash and the Azure worker: `job_completed` in about 4 s, the blob deleted afterwards; chat works. The worker is back at `min replicas 0`. |
+
+**What went differently from the plan**
+
+1. **Step A (measure on the real Upstash) was skipped** by decision: it is a trial and the plan will be paid
+   later. Only `ping` was run (TLS connects, certificate verified). The command rates in 14.7 come from a
+   local Redis and were never compared with Upstash's dashboard, so **how Upstash bills a blocked `BRPOP`
+   is still unmeasured**.
+2. **A read-only Upstash token was used first.** The first worker start failed with `NoPermissionError`:
+   the URL copied from the Upstash console carried the **read-only** token instead of the full-access
+   one. The queue needs write commands (`LPUSH`, `BRPOP`, `ZADD`, `HSET`…). Fix: the full-access token in
+   the Azure secrets (`redis-url`, `redis-password`) and a **revision restart** (a changed secret does not
+   restart the replicas by itself); `backend/.env` was given the full URL too. Lesson: `ping` passed
+   earlier with the read-only URL, so it proves TLS and a valid token, **not** write permission. A write
+   check in `upstash_check.py ping` (set and delete a temporary key) was not built (docs-only change).
+3. **Azure answered 503 during `az containerapp env create`, yet the environment was created.** The later
+   steps worked on it. After a 503 from `az`, look (`az containerapp env show`) before retrying.
+4. The smoke test used `min replicas 1`, as planned; the worker was set to 0 after the real uploads.
+
+**Not measured or not done yet**
+
+- **Cold start** (upload to job start with the replica at 0). The 40-90 s estimate in 14.5 is unverified.
+- That the replica scales to zero by itself after the 300 s cool-down was not recorded here.
+- Upstash command use on the real database; Log Analytics retention (set a short one); the periodic cleanup of
+  orphaned blobs (risk 8); KEDA's polling interval (30 s default).
+
+**Operating the production worker (PowerShell)**
+
+Names: `$rg = "documind-rg"; $app = "documind-worker"; $ghUser = "youseefsherif3"`.
+
+- *Deploy a new worker image* (needed when `app/ingestion.py`, `worker.py`, `jobs.py`, their dependencies or the
+  schema change; the worker has its own copy of the code). If the release has a migration, the order is:
+  Neon backup branch, migrate, **new worker image**, then the backend deploy.
+  ```powershell
+  Set-Location C:\Users\ysher\Downloads\AI-Document-Summarizer-master
+  git status --porcelain                      # must print nothing
+  $tag = git rev-parse --short HEAD; $image = "ghcr.io/$ghUser/documind-worker:$tag"
+  docker build -t documind-worker:check -t $image --label "org.opencontainers.image.source=https://github.com/youseefsherif3/AI-Document-Summarizer-Last" --label "org.opencontainers.image.revision=$tag" .\backend
+  # the no-secrets check of step B (14.9), then log in with a write:packages token (Read-Secret), then:
+  docker push $image
+  az containerapp update -n $app -g $rg --image $image          # a new revision starts; the old one stops
+  az containerapp logs show -n $app -g $rg --follow              # expect: Connected to rediss://…, ready
+  ```
+  The first push of a new tag keeps the package's public visibility.
+- *Roll the worker back to an earlier image*: `az containerapp update -n $app -g $rg --image ghcr.io/$ghUser/documind-worker:a9f1ccf`.
+- *Change a setting*: `az containerapp update -n $app -g $rg --set-env-vars NAME=value` (new revision). *Change a secret*:
+  `az containerapp secret set -n $app -g $rg --secrets "name=value"` (read the value with `Read-Secret`), then restart the
+  revision (`az containerapp revision list -n $app -g $rg -o table`, then `az containerapp revision restart -n $app -g $rg --revision <name>`).
+- *Look*: `az containerapp replica list -n $app -g $rg -o table` (empty at zero), `az containerapp logs show -n $app -g $rg --follow`.
+  A smoke test of a new image is `min replicas 1` (`az containerapp update -n $app -g $rg --min-replicas 1`), then back to `--min-replicas 0`.
+- *Roll production back to inline uploads, one step*: in the Vercel **backend** project delete `INGESTION_MODE` (or set it
+  to `inline`) and **redeploy** (a changed variable only applies to a new deployment). The frontend needs no change. Leave the
+  worker alone until it has drained: `SELECT count(*) FROM processing_jobs WHERE mode='queue' AND status IN
+  ('pending','processing')` must be 0. If Redis is the problem the same step applies; queued jobs then fail as `timed_out`
+  after 15 minutes and the users upload again.
+
 ---
 
 ## Source and Scope Notes
 
 The Phase 3 learning areas and production-project requirements come from the *Junior AI Engineer Development Plan*. The current-state baseline comes from the Phase 2 codebase and `docs/design.md`. The Redis + Celery choice, the API contracts, data entities, implementation order and acceptance criteria are implementation proposals agreed with the user. My AI Analytics is an optional extension beyond the plan's requirements.
 
-**Next action:** the production queue worker (§14) is planned and approved; it is built on `phase3/prod-worker`, starting with Step A (measure Upstash command use with a local fake-LLM worker). Earlier note:  Steps 0–2 are merged. Steps 3+4 are built on `phase3/queue-ingestion` and wait for review and merge. Then Step 6 (Redis cache), Step 7 (Flower, `/metrics`) and Step 10 (one Locust scenario with the fake LLM), within the reduced scope in "Current Scope" at the top.
+**Next action:** Phase 3 is finished and live: Steps 0-2, 3+4, 6, 7, 10, the usage dashboard and the production queue worker (§14, as built in 14.11) are merged into `main` and deployed. What remains is listed under "Not measured or not done yet" in 14.11 (worker cold start, Upstash command use on the real database, orphaned-blob cleanup, Log Analytics retention) and the switch from Upstash's free trial to a paid plan.
