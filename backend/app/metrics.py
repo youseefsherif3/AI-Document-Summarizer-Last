@@ -205,7 +205,12 @@ def queue_depth() -> int | None:
     """Jobs waiting in the worker's Redis queue, or None if Redis can't be read."""
     import redis
 
+    # Same default as the worker; only asked for when this deployment uses the queue.
+    from app.ingestion import ingestion_mode
+
     url = os.getenv("REDIS_URL", "").strip()
+    if not url and ingestion_mode() == "queue":
+        url = "redis://127.0.0.1:6379/0"
     if not url:
         return None
     client = redis.Redis.from_url(url, socket_connect_timeout=0.5, socket_timeout=0.5)

@@ -438,6 +438,19 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | Frontend | `DocumentsContext.tsx` polls `/jobs/{id}` every 1.5 s after a 202 ("Pending" while queued, "Summarizing" while the worker has it); the SSE path is unchanged. |
 | Checks | 654 backend tests (new: `test_queue_ingestion.py`, a migration test); `tsc`, lint. By hand against real Redis and Postgres with the AI calls faked: 3 uploads accepted, the 4th refused (429), jobs completed, a slot freed, the UI went Pending → Completed; the Compose worker container processed a job and failed it safely with `ai_not_configured` (its AI key was blanked, so no paid calls). Not run: a real upload through the worker with the paid provider. |
 
+### Step 7 as built (branch `phase3/monitoring`, from `phase3/redis-cache`)
+
+> **Before merging and deploying:** production needs **`0004_processing_jobs` and `0005_ai_usage`** (both from `alembic upgrade head`) before this code runs; same order as above (backup branch, migrate, deploy straight after).
+
+| Area | What was built |
+|---|---|
+| Dependency | None added. Flower is the image `mher/flower:2.0.1` (approved), not a Python package; `/metrics` renders the Prometheus text format itself. |
+| Flower | Compose service `flower` at `127.0.0.1:5555` (local only); the worker now runs with `-E` so tasks show up. A task is `SUCCESS` when it ran, even when its job failed; the job's state is in `/jobs/{id}` and `/metrics`. Its HTTP API stays locked (the UI works). |
+| `/metrics` | Off (404) unless `METRICS_TOKEN`; `Authorization: Bearer`, constant-time compare; not in the OpenAPI docs, so the isolation test doesn't list it; no personal data in the output. Series: `documind_http_requests_total` and `…_request_duration_seconds` (per route template; unmatched paths are one label), `documind_ai_*_total` (calls, prompt/completion tokens, cost, duration by kind, model, outcome), `documind_jobs{mode,state}`, `documind_cache_lookups_total{kind,result}`, `documind_queue_depth`, `documind_metrics_collector_errors`. A failing collector is logged and reported, never a failed scrape. HTTP numbers are per API process; the rest come from Postgres/Redis and so cover every instance and the worker. |
+| `ai_usage` | Migration `0005_ai_usage`; one row per AI call for a user (kind, model, outcome, tokens, cost, source, duration, time, optional job id), `user_id` NOT NULL with cascade delete, index (user, time). `usage_store`: in-memory queue (1000) and one writer thread; `record()` never waits or raises; rows dropped with a warning when the database is slow or down or the queue is full; calls without a user (evals) are not recorded; `RECORD_AI_USAGE=false` turns it off. Frozen serverless functions may lose their last rows (best effort). No page and no read endpoint yet; when added, every query takes the owner. |
+| Logs | `app/context.py`: user and job in context variables; ` job_id=…` is added to every `app*` log line made during a job (worker and inline upload, including `ai_usage` and `ai_retry`); the `ai_usage` line also names `user_id` (never the email). |
+| Checks | 743 backend tests (44 new in `test_monitoring.py`, a migration test). Mutation checks on the token code: an always-true token check failed 9 tests; removing the "off without token" branch failed 1. By hand with the real stack (AI key blanked, no paid calls): `/metrics` 401 without the token, 200 with it, showing requests, job counts and queue depth; Flower showed the worker and both `documents.ingest` tasks with their job ids; worker log lines carried the job id. Not run: `ai_usage` rows and AI series with real provider calls (covered by tests with made-up usage). |
+
 ### Step 6 as built (branch `phase3/redis-cache`, from `phase3/queue-ingestion`)
 
 | Area | What was built |
@@ -479,7 +492,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 - [ ] A user cannot read, search, delete or see usage for another user's data, even by changing IDs in requests.
 - [ ] All schema changes are Alembic migrations, applied in production.
 - [x] Caches work with TTL and invalidation; hits/misses are logged and counted (impact on cost not measured with real numbers yet); flushing Redis loses no data. (Step 6)
-- [ ] Flower shows the worker's tasks; `/metrics` returns the app's numbers only with the token; logs contain no secrets or document contents.
+- [x] Flower shows the worker's tasks; `/metrics` returns the app's numbers only with the token; logs contain no secrets or document contents. (Step 7)
 - [x] The full setup (Postgres, Redis, worker) runs locally with Docker Compose in `INGESTION_MODE=queue`, and the Vercel deployment keeps working in `INGESTION_MODE=inline`. (Steps 3+4: inline is the default and its tests pass; not yet redeployed to Vercel)
 - [ ] One Locust scenario (fake LLM mode) has run, with a short report of real measurements.
 - [ ] The Phase 2 eval suite still passes at or above its baseline.
@@ -523,7 +536,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 
 ### Delivery and verification
 - [x] Docker Compose with Postgres, Redis and the worker; `INGESTION_MODE` (`queue` / `inline`). (Steps 3+4)
-- [ ] Monitoring: Flower, `/metrics`, existing logs.
+- [x] Monitoring: Flower, `/metrics`, job ids in the logs. (Step 7; plus the `ai_usage` table)
 - [ ] One Locust scenario (fake LLM mode) and a short report.
 - [ ] Phase 2 evals still at or above baseline.
 - [ ] Documentation updated (README, CLAUDE.md, docs/design.md).

@@ -277,6 +277,34 @@ docker exec docsum-redis redis-cli -n 1 --scan        # the cached keys (hashes,
 docker exec docsum-redis redis-cli -n 1 flushdb       # empty the cache
 ```
 
+## Monitoring
+
+- **Flower** (the worker): `docker compose up -d` also starts it. Open <http://127.0.0.1:5555>
+  (this machine only). *Workers* shows the worker and *Tasks* every `documents.ingest` task with
+  its job id, state, retries and runtime. A task is `SUCCESS` when it ran to the end, even if the
+  job it handled *failed* (for example `ai_not_configured`): the job's own state is in
+  `GET /jobs/{id}` and in the `/metrics` job counts.
+- **`/metrics`** (the API, Prometheus text format): off (404) until `METRICS_TOKEN` is set in
+  `backend/.env`; then it needs `Authorization: Bearer <token>`. It is system-wide and not in the
+  API docs. It shows HTTP requests and latency by route, AI calls, tokens, cost and time by kind,
+  model and outcome, upload jobs by mode and state, cache hits and misses, and the queue length.
+  Try it (start the API with the token set):
+
+  ```bash
+  curl -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8000/metrics
+  ```
+
+  Requests and latency are counted in the API process that answers; the AI, job and cache
+  numbers come from the database and Redis, so they include the worker and every instance.
+- **AI usage table** (`ai_usage`): every summary, chat, embedding and rewrite call made for a user
+  is recorded with kind, model, prompt/completion tokens, cost, duration, outcome and time (and
+  the upload job, if any), so a usage page can be added later. Rows are written by a background
+  thread: they never slow or fail a request, and are dropped with a warning if the database is
+  slow or down. `RECORD_AI_USAGE=false` turns the table off. There is no page for it yet.
+- **Logs:** every log line of the app made while a job is worked on ends with `job_id=…`, in the
+  API (inline uploads) and in the worker, including the `ai_usage` and `ai_retry` lines. Search
+  for the id to follow one upload: `docker compose logs worker | grep <job id>`.
+
 ## Database commands
 
 From the project root:
@@ -386,12 +414,12 @@ checks at startup that the database is at the newest migration (and that stored 
    `python -m alembic upgrade head`.
 4. Deploy the backend.
 
-**Migration 0004 (upload jobs) must be applied before the code that uses it is deployed.** The
-backend refuses to start unless the database is at the newest revision, so run
-`python -m alembic upgrade head` (it adds the `processing_jobs` table; production is at
-`0003_document_owner`) after the Neon backup branch and **right before** deploying the backend.
+**Migrations 0004 (upload jobs) and 0005 (AI usage) must be applied before the code that uses them is
+deployed.** The backend refuses to start unless the database is at the newest revision, so run
+`python -m alembic upgrade head` (it adds the `processing_jobs` and `ai_usage` tables; production is
+at `0003_document_owner`) after the Neon backup branch and **right before** deploying the backend.
 The revision check works both ways: until the new backend is live, the *old* backend (which
-expects `0003`) refuses to start on a `0004` database, so deploy straight after migrating. In
+expects `0003`) refuses to start on a migrated database, so deploy straight after migrating. In
 production `INGESTION_MODE` stays unset (`inline`); no Redis or worker is needed.
 
 **Never run `alembic downgrade` on production** (the baseline's downgrade drops all tables).
