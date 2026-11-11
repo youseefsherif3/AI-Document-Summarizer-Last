@@ -34,6 +34,8 @@ To save time, Phase 3 now builds only what the production project asks for: **ba
 
 The default is `inline`, so a deployment that doesn't set it behaves as today. The backend's concurrent-upload limit applies in both modes; duplicate detection stays in the browser (no `content_hash`). How the frontend learns the mode (so it either reads the SSE stream or polls the job) is decided in Step 4, without a second setting that could disagree with the backend.
 
+**AI provider (production):** SovereignEG (`AI_BASE_URL=https://backend.sovereigneg.com/v1`) with `gpt-4o-mini` for summary and chat and `text-embedding-3-small` (1536) for embeddings. Step 2 is fully checked in production (see "Step 2 as built").
+
 **Production database:** the Neon project `broad-feather-89382117` (the backend's `DATABASE_URL`). The older Neon project `documind-rag-dev` is no longer used.
 
 ## How to Use This Document
@@ -435,7 +437,8 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | Also | Provider 402 (out of credit) → 503 with a clear message, logged, never retried. |
 | Checks | Backend tests (isolation tests read every route from the OpenAPI schema), tsc, lint, build; browser checks against the test database at 320–1280 px; retrieval eval before and after identical (`20261110-180003-step2-before-main`, `20261110-180015-step2-after-owner-scoping`). |
 | Production | Migrated straight to production (no rehearsal branch, after a Neon backup branch): `schema_check`, `stamp 0001_baseline`, `upgrade head`; now at `0003_document_owner`. `schema_check` also listed 12 Postgres 18 named NOT NULL constraints (on columns already marked not null); handling them is a separate small commit. Production had no documents, so `claim_documents` was not needed. Merged into `main` at `56cf29e`. |
-| Not yet | The upload and chat checks in production wait until the OpenRouter account has credit again (it currently returns 402). |
+| Production checks | **Done**, all passing in production: register, sign in and out, upload (small, and over 4.5 MB through Blob), summary, streamed chat with citations, delete. |
+| AI provider | Merged into `main` at `614b29a` (branch `phase3/ai-provider-settings`): `AI_BASE_URL` and `AI_API_KEY` make the provider a setting. Production now uses SovereignEG (`https://backend.sovereigneg.com/v1`, an OpenAI-compatible API) with `gpt-4o-mini` for the summary and chat and `text-embedding-3-small` (1536 dimensions) for embeddings. Local `backend/.env` uses SovereignEG too; the evals must not be run with that `.env`. |
 
 ---
 
