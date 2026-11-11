@@ -28,6 +28,7 @@ class FakeRedis:
 
     def __init__(self):
         self.data: dict[str, tuple[str, int | None]] = {}
+        self.hashes: dict[str, dict[str, int]] = {}
         self.down = False
         self.commands = 0
 
@@ -39,6 +40,10 @@ class FakeRedis:
     def mget(self, keys):
         self._check()
         return [self.data[k][0] if k in self.data else None for k in keys]
+
+    def hgetall(self, key):
+        self._check()
+        return {k: str(v) for k, v in self.hashes.get(key, {}).items()}
 
     def delete(self, key):
         self._check()
@@ -54,10 +59,18 @@ class FakeRedis:
             def set(self, key, value, ex=None):
                 self.ops.append((key, value, ex))
 
+            def hincrby(self, key, field, amount):
+                self.ops.append((key, field, amount))
+
             def execute(self):
                 outer._check()
-                for key, value, ex in self.ops:
-                    outer.data[key] = (value, ex)
+                for op in self.ops:
+                    if len(op) == 3 and isinstance(op[1], str) and isinstance(op[2], int)                             and op[0].endswith("stats"):
+                        outer.hashes.setdefault(op[0], {})
+                        outer.hashes[op[0]][op[1]] = outer.hashes[op[0]].get(op[1], 0) + op[2]
+                    else:
+                        key, value, ex = op
+                        outer.data[key] = (value, ex)
 
         return Pipe()
 

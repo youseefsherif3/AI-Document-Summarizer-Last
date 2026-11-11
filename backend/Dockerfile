@@ -12,8 +12,8 @@ COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini .
 
-# Not root. One process per CPU is Celery's default; two is enough locally.
+# -E sends the task events Flower shows. Not root. One process per CPU is Celery's default; two is enough locally.
 RUN useradd --create-home worker
 USER worker
 
-CMD ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "--concurrency=2", "-Q", "documind"]
+CMD ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "--concurrency=2", "-Q", "documind", "-E"]

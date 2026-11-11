@@ -24,7 +24,7 @@ from typing import Any
 
 from vercel import blob
 
-from app import cache, jobs
+from app import cache, context, jobs
 from app.database import save_document_with_chunks
 from app.extraction import extract_pages, join_pages
 from app.services.chunking import chunk_pages
@@ -230,6 +230,13 @@ def process_job(job_id: str, *, max_attempts: int = MAX_ATTEMPTS) -> float | Non
         logger.info("job_skipped job_id=%s reason=not_pending", job_id)
         return None
     attempt = job["attempts"]
+    # Everything logged below, in this module and in the AI calls, names the job; the AI calls
+    # are recorded for the job's owner.
+    with context.use_context(user_id=job["owner_user_id"], job_id=job_id):
+        return _run_claimed_job(job, job_id, attempt, max_attempts)
+
+
+def _run_claimed_job(job: dict[str, Any], job_id: str, attempt: int, max_attempts: int):
     logger.info("job_started job_id=%s attempt=%d/%d", job_id, attempt, max_attempts)
     blob_pathname = job["blob_pathname"]
     retry_in: float | None = None

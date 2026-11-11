@@ -6,6 +6,9 @@ import os
 import time
 from typing import Any
 
+from app import usage_store
+from app.context import current_job_id, current_user_id
+
 logger = logging.getLogger(__name__)
 
 # Optional fallback prices, used only when OpenRouter returns no `usage.cost`.
@@ -89,8 +92,14 @@ def log_ai_usage(
         "cost_source": cost_source,
         "duration_ms": round((time.perf_counter() - started_at) * 1000),
     }
+    shown = dict(fields)
+    if current_user_id.get() is not None:
+        shown["user_id"] = current_user_id.get()
+    if current_job_id.get() is not None:
+        shown["job_id"] = current_job_id.get()
     message = " ".join(
-        f"{key}={'unknown' if value is None else value}" for key, value in fields.items()
+        f"{key}={'unknown' if value is None else value}" for key, value in shown.items()
     )
     logger.info("ai_usage %s", message, extra={"ai_usage": fields})
+    usage_store.record(fields)  # queued for the ai_usage table; never waits, never raises
     return fields

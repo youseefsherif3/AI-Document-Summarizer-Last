@@ -9,7 +9,7 @@ import re
 from functools import partial
 from typing import Literal
 from uuid import UUID
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -17,7 +17,7 @@ from sqlalchemy import text
 from pydantic import BaseModel, Field
 from vercel import blob
 
-from . import auth, cache, ingestion, jobs, limits
+from . import auth, cache, context, ingestion, jobs, limits, metrics
 from .auth import User, current_user, require_trusted_origin
 from .extraction import extract_pages, join_pages
 from .database import (
@@ -85,7 +85,10 @@ app.add_middleware(
 )
 # Re-sends the session cookie when a visit renewed the session (also on streamed responses).
 app.add_middleware(auth.SessionCookieMiddleware)
+# Outermost: counts and times every request (after the CORS and cookie layers ran).
+app.add_middleware(metrics.MetricsMiddleware)
 app.include_router(auth.router)
+context.install_log_context()  # job ids in every log line made while a job is worked on
 
 
 @app.exception_handler(limits.DailyLimitReached)
@@ -182,6 +185,22 @@ def root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics_endpoint(request: Request):
+    """System-wide numbers for the operator (not a user endpoint). Off (404) unless
+    METRICS_TOKEN is set; then it needs `Authorization: Bearer <token>`."""
+    token = metrics.metrics_token()
+    if token is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+    if not metrics.token_matches(request.headers.get("authorization"), token):
+        raise HTTPException(
+            status_code=401, detail="Invalid metrics token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    body = await run_in_threadpool(metrics.render)
+    return Response(body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.get("/documents")
@@ -300,6 +319,11 @@ async def _summarize_and_index(
     The chunks are embedded in parallel with the summary stream. The document and its
     chunks are saved together, in one transaction, only if both succeed.
     """
+    # AI calls made below are recorded for this user (and job). Set, not reset: this generator
+    # may be closed from another context, and the value only lives in this request's task.
+    context.current_user_id.set(owner_user_id)
+    if job_id:
+        context.current_job_id.set(job_id)
     embedding_task = asyncio.create_task(
         embed_texts([chunk.text for chunk in document_chunks])
     )
@@ -539,6 +563,7 @@ async def _chat_events(
     owner_user_id: int,
 ):
     """SSE events for one question: `sources`, then `delta`s, then `done` (or `error`)."""
+    context.current_user_id.set(owner_user_id)  # AI calls below are recorded for this user
     try:
         prepared = await prepare_answer(
             message, history, document_ids, owner_user_id=owner_user_id

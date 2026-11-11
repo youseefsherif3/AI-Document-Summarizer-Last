@@ -55,6 +55,20 @@ services:
       DATABASE_URL: postgresql://docsum:docsum@db:5432/docsum
       REDIS_URL: redis://redis:6379/0
 
+  # Flower: a web page for the Celery worker (tasks, states, retries, workers) at
+  # http://127.0.0.1:5555. Local only (the port is bound to this machine); it reads the worker's
+  # events from Redis and shows task ids, not documents.
+  flower:
+    image: mher/flower:2.0.1
+    container_name: docsum-flower
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["celery", "--broker=redis://redis:6379/0", "flower", "--port=5555"]
+    ports:
+      - "127.0.0.1:5555:5555"
+
 volumes:
   docsum-db-data:
   docsum-redis-data:

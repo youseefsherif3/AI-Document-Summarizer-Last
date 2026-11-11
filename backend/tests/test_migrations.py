@@ -186,6 +186,26 @@ def test_jobs_migration_adds_the_table_and_downgrades_to_the_previous_schema(scr
     assert after == before, explain(before, after)
 
 
+def test_ai_usage_migration_adds_the_table_and_downgrades_to_the_previous_schema(
+    scratch_database,
+):
+    url = scratch_database()
+    config = alembic_config(url)
+    command.upgrade(config, "0004_processing_jobs")
+    before = schema_check.snapshot_of(url)
+
+    command.upgrade(config, "0005_ai_usage")
+    usage = schema_check.snapshot_of(url)["tables"]["ai_usage"]
+    assert usage["columns"]["user_id"]["not_null"] is True
+    assert usage["columns"]["duration_ms"]["not_null"] is True
+    assert usage["constraints"]["ai_usage_user_id_fkey"].endswith("ON DELETE CASCADE")
+    assert "ix_ai_usage_user_created" in usage["indexes"]
+
+    command.downgrade(config, "0004_processing_jobs")
+    after = schema_check.snapshot_of(url)
+    assert after == before, explain(before, after)
+
+
 def test_existing_documents_have_no_owner_after_the_migration(scratch_database):
     url = scratch_database()
     config = alembic_config(url)

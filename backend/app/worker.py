@@ -10,10 +10,12 @@ import os
 from celery import Celery
 from celery.signals import worker_process_init
 
-from app import ingestion
+from app import context, ingestion
 
 # Importing app.database (through ingestion) loads backend/.env.
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+
+context.install_log_context()
 
 celery_app = Celery("documind", broker=REDIS_URL)
 celery_app.conf.update(

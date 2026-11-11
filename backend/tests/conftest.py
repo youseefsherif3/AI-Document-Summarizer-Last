@@ -143,8 +143,11 @@ def fake_query_embedding(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clean_database(test_database):
+    from app import usage_store
+
+    usage_store.flush()  # AI usage rows queued by the previous test are written first
     with database.get_connection() as connection:
-        # CASCADE also empties chunks (via documents) and sessions and daily_usage (via users).
+        # CASCADE also empties chunks (via documents) and sessions, daily_usage, jobs and ai_usage (via users).
         connection.execute(text(
             "TRUNCATE TABLE documents, users, login_attempts RESTART IDENTITY CASCADE"
         ))

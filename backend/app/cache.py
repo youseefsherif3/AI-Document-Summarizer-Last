@@ -47,6 +47,8 @@ import redis
 logger = logging.getLogger(__name__)
 
 KEY_PREFIX = "documind:cache:"
+# Hit/miss totals shared by the API and the worker (flushing the cache resets them).
+STATS_KEY = "documind:cache-stats"
 FAILURE_PAUSE_SECONDS = 10
 SOCKET_TIMEOUT_SECONDS = 0.5
 DEFAULT_TTL_SECONDS = 7 * 24 * 3600
@@ -186,7 +188,32 @@ def get_many_sync(kind: str, keys: list[str]) -> list[Any | None]:
     stats[f"{kind}.hit"] += hits
     stats[f"{kind}.miss"] += len(values) - hits
     logger.info("cache kind=%s hits=%d misses=%d", kind, hits, len(values) - hits)
+    _count_in_redis(kind, hits, len(values) - hits)
     return values
+
+
+def _count_in_redis(kind: str, hits: int, misses: int) -> None:
+    """Add to the totals every process shares (/metrics shows them); never raises."""
+    try:
+        pipe = _get_client().pipeline(transaction=False)
+        if hits:
+            pipe.hincrby(STATS_KEY, f"{kind}.hit", hits)
+        if misses:
+            pipe.hincrby(STATS_KEY, f"{kind}.miss", misses)
+        pipe.execute()
+    except (redis.RedisError, OSError) as error:
+        _failed(kind, error)
+
+
+def totals_sync() -> dict[str, int]:
+    """Hits and misses by "<kind>.hit" / "<kind>.miss" across the API and the worker; this
+    process's own counts if Redis can't be read."""
+    if _usable():
+        try:
+            return {key: int(value) for key, value in _get_client().hgetall(STATS_KEY).items()}
+        except (redis.RedisError, OSError) as error:
+            _failed("stats", error)
+    return {key: value for key, value in stats.items() if key.endswith((".hit", ".miss"))}
 
 
 def set_many_sync(kind: str, items: dict[str, Any]) -> None:
