@@ -504,5 +504,6 @@ def test_the_flower_and_metrics_pieces_exist_in_compose():
     compose = (pathlib.Path(__file__).parents[2] / "docker-compose.yml").read_text(encoding="utf-8")
     assert "flower:" in compose and "mher/flower:2.0.1" in compose
     assert '"127.0.0.1:5555:5555"' in compose  # local only
-    dockerfile = (pathlib.Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
-    assert '"-E"' in dockerfile  # the worker sends the events Flower shows
+    # The local worker sends the events Flower shows (the image itself doesn't: see test_prod_worker).
+    worker_block = compose[compose.index("  worker:"):compose.index("  flower:")]
+    assert '"-E"' in worker_block

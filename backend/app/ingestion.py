@@ -22,6 +22,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
 from vercel import blob
 
 from app import cache, context, jobs
@@ -101,6 +102,10 @@ def describe_failure(error: Exception) -> Failure:
     are the ones the inline upload shows for the same errors."""
     if isinstance(error, IngestionError):
         return Failure(error.code, error.message, transient=False)
+    if isinstance(error, SoftTimeLimitExceeded):
+        # The worker's soft time limit (app/worker.py): retrying would take as long again.
+        return Failure("processing_timeout",
+                       "Processing took too long. Try a smaller file.", transient=False)
     if isinstance(error, TimeoutError):
         return Failure("ai_timeout", str(error), transient=True)
     if isinstance(error, ConnectionError):

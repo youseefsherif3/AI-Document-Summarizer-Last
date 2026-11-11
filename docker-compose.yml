@@ -46,6 +46,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # The image's command is the production one; locally the worker also sends task events (-E),
+    # which Flower shows.
+    command: ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "-Q", "documind", "-E"]
     # Same settings as the API (AI provider, models, limits) from backend/.env...
     env_file:
       - path: ./backend/.env

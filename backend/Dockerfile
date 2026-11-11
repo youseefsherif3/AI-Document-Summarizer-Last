@@ -12,8 +12,11 @@ COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini .
 
-# -E sends the task events Flower shows. Not root. One process per CPU is Celery's default; two is enough locally.
+# Not root. The number of processes comes from WORKER_CONCURRENCY (app/worker.py).
 RUN useradd --create-home worker
 USER worker
 
-CMD ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "-Q", "documind", "-E"]
+# Production defaults: no gossip, mingle or heartbeat, and no task events (-E). They send pub/sub
+# traffic over Redis that a metered Redis bills for and that only Flower uses; docker-compose.yml
+# starts the local worker with -E for Flower.
+CMD ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "-Q", "documind",      "--without-gossip", "--without-mingle", "--without-heartbeat"]

@@ -1,7 +1,21 @@
-.env
+# Nothing secret or local goes into the image (it is pushed to a registry that may be public).
+# The Dockerfile also copies only app/, migrations/, alembic.ini and requirements.txt.
+# A pattern without **/ matches only the top of the build context, so secrets are listed at any depth.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+**/id_rsa*
+**/*secret*
+**/*credential*
+**/users.json
 .venv
-__pycache__
-*.pyc
+**/__pycache__
+**/*.pyc
+.git
 tests
 evals
 .pytest_cache
