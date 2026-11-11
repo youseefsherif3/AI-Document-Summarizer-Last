@@ -62,6 +62,19 @@ docker compose -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml dow
 backend/.venv/Scripts/python loadtest/seed_users.py --clean
 ```
 
+## Measuring the queue on a real Upstash Redis (Step A of production)
+
+`upstash_check.py` runs a local fake-LLM worker and jobs against your Upstash database, to count the
+commands the queue uses before anything is created on Azure. It reads `UPSTASH_REDIS_URL` from
+`backend/.env` (never printed), blanks every AI key, and refuses any database but the local
+`docsum_load`. See `docs/phase3-plan.md` section 14.9, step A.
+
+```powershell
+backend\.venv\Scripts\python loadtest\upstash_check.py ping
+backend\.venv\Scripts\python loadtest\upstash_check.py worker      # leave running 10 minutes
+backend\.venv\Scripts\python loadtest\upstash_check.py enqueue --count 10
+```
+
 ## What it does not measure
 
 The frontend (Next.js and its `/api` rewrite) is not in the path: Locust talks to the API

@@ -720,7 +720,9 @@ Upstash bills **every command** (reads and writes alike; each command in a pipel
 of N commands costs N+2; `AUTH`, `PING`, `SELECT`, `INFO` are free). Its Celery guide warns that an always-on
 worker "polls Redis continuously" and recommends a Fixed plan for that. It does **not** say how a blocked
 `BRPOP` is billed; I assume **each BRPOP call (one per timeout) is one command**, the pessimistic reading.
-**Step A measures this on the real database before any Azure resource exists.**
+**Step A measures this on the real database before any Azure resource exists.** A first measurement
+against a local Redis (same code, `loadtest/upstash_check.py`'s paths, command counters from `INFO
+commandstats`, excluding the commands Upstash does not bill) is in "Measured so far" below.
 
 From the kombu source, per job: publish about 1–3 commands; worker `BRPOP` 1, mark unacked (`MULTI`, `ZADD`,
 `HSET`, `EXEC`) 4, acknowledge (`MULTI`, `ZREM`, `HDEL`, `EXEC`) 4: **about 12 per job**, 12 more per retry.
@@ -742,6 +744,22 @@ From the kombu source, per job: publish about 1–3 commands; worker `BRPOP` 1, 
 cache; the KEDA check alone is 17 % of the cap. When the quota runs out Upstash rejects commands, uploads
 answer 503, and the fix is the one-step rollback (14.8) or the $10 Fixed plan (limited per second; whether
 there is no monthly cap at all is *unverified*). Watch the Upstash dashboard; act at 70 %.
+
+**Measured so far (local Redis, 2026-11-11, with the settings of 14.6; Upstash may count differently):**
+an idle worker made about **0.35 billable commands/s** (BRPOP every 5 s, plus the unacked sweep: 23 in 65 s;
+`PING`, which Upstash does not bill, was another 17), so a burst of about 400 s costs about **140**;
+10 jobs (one `LPUSH` each, the worker's `BRPOP`, two transactions of `MULTI`/`ZADD`/`HSET`/`EXEC` and
+`MULTI`/`ZREM`/`HDEL`/`EXEC`) cost **about 11 commands per job**, as estimated. With those numbers:
+
+| Uploads per month | Measured basis (KEDA 86,400 + bursts × 140 + jobs × 11) |
+|---|---|
+| 100 (60 bursts) | about 96,000 (19 %) |
+| 300 (150 bursts) | about 111,000 (22 %) |
+| 1,000 (400 bursts) | about 153,000 (31 %) |
+| 1,000, all isolated | about 237,000 (47 %) |
+
+The KEDA check is now 60-90 % of all use; raising its polling interval would be the next saving (it is a
+scale-rule property; not settable by CLI flag as far as I could find, so YAML/ARM *(unverified)*).
 
 ### 14.8 Estimated Azure cost, and rollback to inline in one step
 
@@ -803,8 +821,9 @@ cd C:\Users\ysher\Downloads\AI-Document-Summarizer-master
 docker build -t documind-worker:check .\backend
 # Everything the image contains under /srv/backend, and any .env / key / certificate file anywhere in it:
 docker run --rm --entrypoint find documind-worker:check /srv/backend -type f
-docker run --rm --entrypoint sh documind-worker:check -c "find / -xdev ( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name 'users.json' ) -not -path '/usr/*' -not -path '/proc/*' 2>/dev/null"
-# Expected: the first lists only app/, migrations/, alembic.ini, requirements.txt; the second prints nothing.
+docker run --rm --entrypoint sh documind-worker:check -c "find / -xdev ( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name 'users.json' -o -name '*secret*' -o -name '*credential*' ) -not -path '/usr/*' -not -path '/etc/ssl/*' -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null; echo '(end)'"
+# Expected: the first lists only app/, migrations/, alembic.ini, requirements.txt (36 files, no .pyc);
+# the second prints only (end). (/etc/ssl holds Debian's public root certificates; they are not secrets.)
 
 $ghUser = "<your-github-user>"
 $tag    = (git rev-parse --short HEAD)
@@ -890,9 +909,13 @@ page shows the calls.
 
 ### 14.10 Order of work
 
-1. Branch `phase3/prod-worker`: the code changes (14.6), tests, the image check, and the Step A tool
-   (`loadtest/upstash_check.py`: `ping`, `worker`, `enqueue`; reads `UPSTASH_REDIS_URL` from `backend/.env`,
-   never prints it, forces the fake LLM and blank AI keys, uses only the local `docsum_load` database).
+1. Branch `phase3/prod-worker` (**done, not merged**): the code changes (14.6), 18 new tests (two
+   mutation checks: dropping the certificate check, and limits longer than the cool-down, each fail tests),
+   the image check (36 files, no `.env`/keys; four decoy secrets planted in `app/` and `migrations/` were
+   all kept out by `.dockerignore`), and the Step A tool (`loadtest/upstash_check.py`: `ping`, `worker`,
+   `enqueue`, `stats`, `clean`; reads `UPSTASH_REDIS_URL` from `backend/.env`, never prints it, forces the
+   fake LLM and blank AI keys, uses only the local `docsum_load` database; checked that a Redis password in
+   an error message is scrubbed).
 2. You create the Upstash database and read the command counts (Step A); I adjust the numbers above.
 3. You run B and C, then D and E (I read logs you paste).
 4. You run F in a quiet hour; we verify together; rollback is ready.
