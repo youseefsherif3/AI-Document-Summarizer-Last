@@ -305,6 +305,25 @@ docker exec docsum-redis redis-cli -n 1 flushdb       # empty the cache
   API (inline uploads) and in the worker, including the `ai_usage` and `ai_retry` lines. Search
   for the id to follow one upload: `docker compose logs worker | grep <job id>`.
 
+## Usage page
+
+The **Usage** page (sidebar) shows the signed-in user's own numbers: uploads and chat questions
+used today against the daily limits (a bar that turns amber from 80 % and red at 100 %, and when
+it resets, at midnight UTC), tokens today and over the last 7 or 30 days, an estimated cost, a
+chart of tokens per day by kind (chat, summaries, embeddings) and the last 20 AI calls. The Chat
+page shows a thin line under the message box ("62 / 100 questions today (62%) · resets in 5h"),
+updated after every answer and after a daily-limit error.
+
+It reads `GET /usage/today` (the existing `daily_usage` counters) and `GET /usage/summary?days=7|30`
+(the `ai_usage` table, so no new migration), both limited to the signed-in user. **Cost is an
+estimate in EGP** from a price table per million tokens: SovereignEG's `gpt-4o-mini` (8.80 in /
+35.19 out) and `text-embedding-3-small` (1.17 in) are built in; replace the table with
+`USAGE_PRICES_EGP_PER_MILLION_TOKENS`, for example
+`{"gpt-4o-mini": {"prompt": 8.80, "completion": 35.19}}`. A model without a price adds nothing to
+the cost and the page says the estimate is incomplete. A table that isn't valid JSON stops the
+backend from starting. Try it locally: sign in, upload a file and ask a question, then open
+**Usage**.
+
 ## Load test
 
 `loadtest/` has one Locust scenario (signed-in users list documents, upload in queue mode and wait

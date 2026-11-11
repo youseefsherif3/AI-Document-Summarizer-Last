@@ -20,6 +20,7 @@ import DocumentPicker from "@/components/chat/DocumentPicker";
 import SourceList from "@/components/chat/SourceList";
 import MainLayout from "@/components/layout/MainLayout";
 import { useDocumentsContext } from "@/context/DocumentsContext";
+import ChatUsageLine from "@/components/chat/ChatUsageLine";
 import { isAbortError, streamChatAnswer } from "@/lib/chat-api";
 import { ALLOWED_EXTENSIONS, MAX_CONCURRENT_UPLOADS } from "@/lib/constants";
 import type { ChatMessage } from "@/types/chat";
@@ -31,6 +32,8 @@ export default function ChatPage() {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  // Changes after every answer (also a failed one, such as the daily limit), so the usage line reloads.
+  const [usageRefresh, setUsageRefresh] = useState(0);
   const [sentDocumentIds, setSentDocumentIds] = useState<Set<string>>(
     new Set(),
   );
@@ -131,6 +134,7 @@ export default function ChatPage() {
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setIsStreaming(false);
+      setUsageRefresh((count) => count + 1);
     }
   };
 
@@ -505,6 +509,9 @@ export default function ChatPage() {
             )}
           </div>
         </div>
+
+        {/* Today's chat questions against the daily limit */}
+        <ChatUsageLine refreshKey={usageRefresh} />
 
         {/* Disclaimer */}
         <p className="mt-2 shrink-0 text-center text-xs text-gray-600 sm:mt-3">
