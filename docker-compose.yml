@@ -1,4 +1,6 @@
-# Local Postgres + pgvector for development and tests (production uses Neon).
+# Local setup: Postgres + pgvector (development and tests), Redis and the Celery worker for
+# INGESTION_MODE=queue. Production keeps INGESTION_MODE=inline and needs neither Redis nor the
+# worker. The API runs outside Docker (uvicorn) and the frontend with `npm run dev`.
 services:
   db:
     image: pgvector/pgvector:pg17
@@ -19,5 +21,40 @@ services:
       timeout: 3s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: docsum-redis
+    restart: unless-stopped
+    # Append-only file: jobs waiting in the queue survive a restart of the container.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - docsum-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: ./backend
+    container_name: docsum-worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Same settings as the API (AI provider, models, limits) from backend/.env...
+    env_file:
+      - path: ./backend/.env
+        required: false
+    # ...except where the containers reach each other by service name.
+    environment:
+      DATABASE_URL: postgresql://docsum:docsum@db:5432/docsum
+      REDIS_URL: redis://redis:6379/0
+
 volumes:
   docsum-db-data:
+  docsum-redis-data:
