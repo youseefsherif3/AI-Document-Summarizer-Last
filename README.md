@@ -287,6 +287,7 @@ Backend project:
 |---|---|
 | `DATABASE_URL` | Neon's **pooled** connection string (secret) |
 | `OPENROUTER_API_KEY` | your OpenRouter key (secret) |
+| `AI_BASE_URL` / `AI_API_KEY` | optional: another OpenAI-compatible provider instead of OpenRouter (its base URL, and its key as a secret). With `AI_BASE_URL` set, `AI_API_KEY` is required and the model settings must use that provider's model IDs |
 | `BLOB_READ_WRITE_TOKEN` | the same Blob store, connected to this project too (secret) |
 | `CORS_ORIGINS` | the frontend's exact URL, for example `https://your-app.vercel.app`; comma-separate several. Requests that change something (sign-in, upload, chat, delete) are refused unless their `Origin` is listed here, so a preview deployment of the frontend needs its URL added |
 | `ALLOWED_ORIGINS` | optional; the origins allowed to send requests that change something. Empty means `CORS_ORIGINS` |

@@ -104,6 +104,13 @@ def query_rewrite_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def default_ai_provider(monkeypatch):
+    """Tests use the default provider settings, whatever backend/.env points at."""
+    monkeypatch.delenv("AI_BASE_URL", raising=False)
+    monkeypatch.delenv("AI_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def fake_query_embedding(monkeypatch):
     """No real embedding calls for chat questions: the same fixed vector as fake chunks."""
     import app.services.chat as chat

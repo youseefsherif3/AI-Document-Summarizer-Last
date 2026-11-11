@@ -16,7 +16,12 @@ import app.services.chat as chat
 import app.services.embeddings as embeddings
 import app.services.llm as llm
 import app.services.summarizer as summarizer
-from app.services.ai_calls import AIOutOfCreditError, AIRateLimitError, AIServiceError
+from app.services.ai_calls import (
+    AIOutOfCreditError,
+    AIRateLimitError,
+    AIServiceError,
+    AIServiceNotConfiguredError,
+)
 
 REQUEST = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
 
@@ -81,6 +86,62 @@ def test_client_turns_off_the_sdks_own_retries(monkeypatch):
     assert created["max_retries"] == 0
     assert created["base_url"] == "https://openrouter.ai/api/v1"
     assert created["timeout"] == 60.0
+
+
+@pytest.fixture
+def client_settings(monkeypatch):
+    """Build the client with the given settings and return the arguments it got."""
+
+    def build(**env):
+        for name in ("AI_BASE_URL", "AI_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        created = {}
+        monkeypatch.setattr(ai_calls, "AsyncOpenAI", lambda **kwargs: created.update(kwargs))
+        ai_calls._get_async_client.cache_clear()
+        try:
+            ai_calls._get_async_client()
+        finally:
+            ai_calls._get_async_client.cache_clear()
+        return created
+
+    return build
+
+
+def test_default_provider_is_openrouter_with_its_key(client_settings):
+    created = client_settings(OPENROUTER_API_KEY="openrouter-key")
+    assert created["base_url"] == "https://openrouter.ai/api/v1"
+    assert created["api_key"] == "openrouter-key"
+
+
+def test_another_provider_uses_ai_base_url_and_ai_api_key(client_settings):
+    created = client_settings(
+        AI_BASE_URL="https://example.test/v1/",
+        AI_API_KEY="other-key",
+        OPENROUTER_API_KEY="openrouter-key",
+    )
+    assert created["base_url"] == "https://example.test/v1"
+    assert created["api_key"] == "other-key"
+    assert created["max_retries"] == 0
+
+
+def test_ai_api_key_wins_over_the_openrouter_key(client_settings):
+    created = client_settings(AI_API_KEY="other-key", OPENROUTER_API_KEY="openrouter-key")
+    assert created["api_key"] == "other-key"
+
+
+def test_openrouter_key_is_never_sent_to_another_provider(client_settings, caplog):
+    caplog.set_level(logging.ERROR, logger="app.services.ai_calls")
+    with pytest.raises(AIServiceNotConfiguredError):
+        client_settings(AI_BASE_URL="https://example.test/v1", OPENROUTER_API_KEY="openrouter-key")
+    assert "AI_API_KEY is not" in caplog.text
+    assert "openrouter-key" not in caplog.text
+
+
+def test_no_key_at_all_is_not_configured(client_settings):
+    with pytest.raises(AIServiceNotConfiguredError):
+        client_settings()
 
 
 def test_services_share_one_client_and_error_types():

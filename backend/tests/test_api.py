@@ -331,4 +331,4 @@ def test_stream_upload_returns_503_when_ai_not_configured(missing_api_key, caplo
     assert '"status": 503' in response.text
     assert "AI service is not configured." in response.text
     assert documents == []
-    assert "OPENROUTER_API_KEY is not set" in caplog.text
+    assert "OPENROUTER_API_KEY (or AI_API_KEY) is not set" in caplog.text

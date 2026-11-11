@@ -1,4 +1,7 @@
-"""The one place for OpenRouter calls: the client, error mapping and retries.
+"""The one place for AI provider calls: the client, error mapping and retries.
+
+The provider is OpenRouter by default. AI_BASE_URL and AI_API_KEY point the one client at
+another OpenAI-compatible API instead; the model names stay in their own settings.
 
 Every service (summary, chat, embeddings, plain completions) creates its request through
 the client from `_get_async_client()` and sends it through `call_with_retries` or
@@ -84,23 +87,38 @@ OUT_OF_CREDIT_MESSAGE = "The AI service is out of credit. Please try again later
 
 
 class AIServiceNotConfiguredError(Exception):
-    """Raised when OPENROUTER_API_KEY is not set."""
+    """Raised when no API key is set for the AI provider."""
+
+
+def ai_base_url() -> str:
+    """AI_BASE_URL: any OpenAI-compatible API. Empty means OpenRouter."""
+    return os.getenv("AI_BASE_URL", "").strip().rstrip("/") or OPENROUTER_BASE_URL
 
 
 def _require_api_key() -> str:
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    """AI_API_KEY, or OPENROUTER_API_KEY when the provider is OpenRouter.
+
+    The OpenRouter key is never used for another provider, so it is never sent to a
+    different URL by mistake.
+    """
+    api_key = os.getenv("AI_API_KEY", "").strip()
+    if not api_key and ai_base_url() == OPENROUTER_BASE_URL:
+        api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        logger.error("OPENROUTER_API_KEY is not set; cannot call the AI service.")
+        if ai_base_url() == OPENROUTER_BASE_URL:
+            logger.error("OPENROUTER_API_KEY (or AI_API_KEY) is not set; cannot call the AI service.")
+        else:
+            logger.error("AI_BASE_URL is set but AI_API_KEY is not; cannot call the AI service.")
         raise AIServiceNotConfiguredError("AI service is not configured.")
     return api_key
 
 
 # The client is created on first use so importing this module (e.g. in tests)
-# does not require OPENROUTER_API_KEY. A failed key check is not cached.
+# does not require an API key. A failed key check is not cached.
 @cache
 def _get_async_client() -> AsyncOpenAI:
     return AsyncOpenAI(
-        base_url=OPENROUTER_BASE_URL,
+        base_url=ai_base_url(),
         api_key=_require_api_key(),
         timeout=REQUEST_TIMEOUT_SECONDS,
         max_retries=0,  # retries happen in this module, where they are logged
