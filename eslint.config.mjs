@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The Python backend (its virtualenv contains JavaScript, e.g. Locust's web UI) is not linted.
+    "backend/**",
+    "loadtest/**",
   ]),
 ]);
 
