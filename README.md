@@ -243,7 +243,9 @@ failures (timeout, no connection, rate limit) are retried, up to 3 attempts in a
 and then 20 seconds (or the provider's `Retry-After`); a failed job keeps a safe error code and
 message (`GET /jobs/{id}`). A task that is delivered twice does nothing the second time. A
 user can have at most 3 uploads running at the same time, in both modes (429 with
-`"code": "upload_limit"`); a job that has not changed for 15 minutes no longer counts.
+`"code": "upload_limit"`). A job that has not changed for 15 minutes (the worker died, or Vercel
+stopped an inline upload at its time limit) is dead: it is marked `failed` (`timed_out`) the next
+time its owner uploads or asks for it, and never counts toward the limit.
 
 ## Database commands
 
@@ -353,6 +355,14 @@ checks at startup that the database is at the newest migration (and that stored 
    `python -m alembic stamp 0001_baseline`. Then, for every database:
    `python -m alembic upgrade head`.
 4. Deploy the backend.
+
+**Migration 0004 (upload jobs) must be applied before the code that uses it is deployed.** The
+backend refuses to start unless the database is at the newest revision, so run
+`python -m alembic upgrade head` (it adds the `processing_jobs` table; production is at
+`0003_document_owner`) after the Neon backup branch and **right before** deploying the backend.
+The revision check works both ways: until the new backend is live, the *old* backend (which
+expects `0003`) refuses to start on a `0004` database, so deploy straight after migrating. In
+production `INGESTION_MODE` stays unset (`inline`); no Redis or worker is needed.
 
 **Never run `alembic downgrade` on production** (the baseline's downgrade drops all tables).
 To roll back, redeploy the previous backend and, if the data must go back too, restore the

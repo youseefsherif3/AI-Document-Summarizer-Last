@@ -569,13 +569,83 @@ def test_the_limit_is_per_user(queue):
         assert upload(client).status_code == 202  # the default user has none running
 
 
-def test_an_old_unfinished_job_does_not_block_the_user_forever(queue):
-    ids = [new_job() for _ in range(3)]
-    sql("UPDATE processing_jobs SET updated_at = now() - interval '16 minutes' WHERE id = :id",
-        {"id": ids[0]})
+def age(job_id, minutes):
+    sql("UPDATE processing_jobs SET updated_at = now() - make_interval(mins => :m) WHERE id = :id",
+        {"m": minutes, "id": job_id})
+
+
+@pytest.mark.parametrize("mode", ["queue", "inline"])
+@pytest.mark.parametrize("status", ["pending", "processing"])
+def test_three_dead_jobs_do_not_block_the_user_and_are_marked_failed(queue, mode, status):
+    ids = [new_job(mode=mode) for _ in range(3)]
+    for job_id in ids:
+        sql("UPDATE processing_jobs SET status = :s WHERE id = :id", {"s": status, "id": job_id})
+        age(job_id, jobs.STALE_AFTER_MINUTES + 1)
+
     with TestClient(main.app) as client:
         assert upload(client).status_code == 202
-        assert upload(client, "b.txt").status_code == 429
+
+    for job_id in ids:
+        row = job_row(job_id)
+        assert (row["status"], row["error_code"], row["error_message"]) == (
+            "failed", "timed_out", jobs.STALE_ERROR_MESSAGE)
+        assert row["file_content"] is None and row["finished_at"] is not None
+
+
+def test_a_job_just_under_the_limit_still_counts_and_is_left_alone(queue):
+    ids = [new_job() for _ in range(3)]
+    for job_id in ids:
+        age(job_id, jobs.STALE_AFTER_MINUTES - 1)
+    with TestClient(main.app) as client:
+        assert upload(client).status_code == 429
+    assert {job_row(j)["status"] for j in ids} == {"pending"}
+
+
+def test_only_the_dead_jobs_are_expired(queue):
+    old, fresh = new_job(), new_job()
+    age(old, 60)
+    with TestClient(main.app) as client:
+        assert upload(client).status_code == 202
+    assert job_row(old)["status"] == "failed" and job_row(fresh)["status"] == "pending"
+
+
+def test_asking_for_a_dead_job_marks_it_failed_and_shows_the_error():
+    job_id = new_job()
+    age(job_id, 30)
+    with TestClient(main.app) as client:
+        job = client.get(f"/jobs/{job_id}").json()
+    assert job["status"] == "failed"
+    assert job["error"] == {"code": "timed_out", "message": jobs.STALE_ERROR_MESSAGE}
+
+
+def test_another_users_dead_job_is_not_touched_by_my_requests():
+    other = add_user()
+    theirs = new_job(other)
+    age(theirs, 60)
+    with TestClient(main.app) as client:
+        assert client.get(f"/jobs/{theirs}").status_code == 404
+        client.get(f"/jobs/{new_job()}")
+    assert job_row(theirs)["status"] == "pending"
+
+
+def test_a_late_worker_cannot_save_a_job_that_was_marked_dead(summary):
+    job_id = new_job()
+    claimed = jobs.claim_job(job_id)
+    age(job_id, 60)
+    with TestClient(main.app) as client:
+        client.get(f"/jobs/{job_id}")  # seen: marked failed
+    with pytest.raises(jobs.JobAlreadyFinished):
+        asyncio.run(ingestion.run_pipeline(claimed))
+    assert count("documents") == 0 and job_row(job_id)["status"] == "failed"
+    assert ingestion.process_job(job_id) is None  # a redelivered task skips it
+
+
+def test_a_job_that_waits_for_a_retry_is_not_dead_because_of_the_wait(summary):
+    summary.error = TimeoutError("slow")
+    job_id = new_job()
+    ingestion.process_job(job_id)  # released for retry: its clock restarts
+    with TestClient(main.app) as client:
+        assert client.get(f"/jobs/{job_id}").json()["status"] == "pending"
 
 
 def test_the_limit_holds_when_uploads_arrive_at_the_same_moment():

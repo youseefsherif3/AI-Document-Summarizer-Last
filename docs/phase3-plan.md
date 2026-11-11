@@ -425,6 +425,8 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 
 ### Steps 3+4 as built (branch `phase3/queue-ingestion`)
 
+> **Before merging and deploying:** production is at `0003_document_owner` and this part needs **`0004_processing_jobs`**. The backend refuses to start on any other revision, so: Neon backup branch → `python -m alembic upgrade head` with `MIGRATION_DATABASE_URL` → deploy the backend straight after (the old backend also refuses to start on `0004`). Production keeps `INGESTION_MODE` unset (`inline`). Only with the user's OK; the user is reminded before any merge. See README, "Database" under Deployment.
+
 | Area | What was built |
 |---|---|
 | Dependency | `celery[redis]==5.7.0` (approved). Flower and Locust come with Steps 7 and 10. |
@@ -432,7 +434,7 @@ Each step: one branch or commit series, tests passing, diff reviewed, then merge
 | `INGESTION_MODE` | `inline` (default, checked at startup) or `queue`. The frontend decides by the response (`202` + job id → poll, otherwise read the SSE stream), so there is no second setting. In `queue` mode the Blob upload only checks the file's size (`head_blob`); the worker downloads it and deletes it when the job ends. |
 | Worker | `app/ingestion.py` (pipeline, failure mapping, `process_job`) and `app/worker.py` (Celery app: Redis broker, queue `documind`, `acks_late`, prefetch 1, no results backend, fast failure when Redis is down). Image from `backend/Dockerfile`; `redis` and `worker` services in `docker-compose.yml`. |
 | Reliability | Retries only for timeouts, connection errors and rate limits: 3 attempts, 10 s then 20 s (or `Retry-After`, capped at 300 s). The document, its chunks and the job's end are saved in one transaction; if the job has already ended (a duplicate delivery) nothing is saved. Risks 1 (AI client per event loop), 2 (engines reset in each worker process), 5 (limit in the backend) and 8 (the worker deletes the Blob when the job ends) are handled; the periodic blob cleanup and risk 9 (summary input cap) are not. |
-| Limit | At most 3 running uploads per user, enforced in the backend in both modes (inline uploads create a job too), under a per-user advisory lock; a job unchanged for 15 minutes isn't counted. 429 with `"code": "upload_limit"`. |
+| Limit | At most 3 running uploads per user, enforced in the backend in both modes (inline uploads create a job too), under a per-user advisory lock. 429 with `"code": "upload_limit"`. A job unchanged for 15 minutes (dead worker, inline upload stopped by Vercel) never counts and is marked `failed` (`timed_out`) when its owner uploads or asks for it; a worker that finishes late saves nothing. The temporary Blob of such a job is not deleted (risk 8, cleanup not built). |
 | Frontend | `DocumentsContext.tsx` polls `/jobs/{id}` every 1.5 s after a 202 ("Pending" while queued, "Summarizing" while the worker has it); the SSE path is unchanged. |
 | Checks | 654 backend tests (new: `test_queue_ingestion.py`, a migration test); `tsc`, lint. By hand against real Redis and Postgres with the AI calls faked: 3 uploads accepted, the 4th refused (429), jobs completed, a slot freed, the UI went Pending → Completed; the Compose worker container processed a job and failed it safely with `ai_not_configured` (its AI key was blanked, so no paid calls). Not run: a real upload through the worker with the paid provider. |
 

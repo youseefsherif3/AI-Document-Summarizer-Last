@@ -23,9 +23,13 @@ logger = logging.getLogger(__name__)
 
 # At most this many uploads per user running at the same time (the browser enforces it too).
 MAX_ACTIVE_JOBS = 3
-# A job that has not changed for this long is not counted as running: a serverless function
-# that was stopped mid-upload, or a lost queue message, must not block the user forever.
+# A job that has not changed for this long is treated as dead: a worker that died mid-job, a
+# lost queue message, or a serverless function stopped at its time limit must not block the
+# user forever. Such a job no longer counts as running and is marked failed when it is seen
+# (when its owner starts an upload or asks for the job).
 STALE_AFTER_MINUTES = 15
+STALE_ERROR_CODE = "timed_out"
+STALE_ERROR_MESSAGE = "The upload did not finish in time. Please upload the file again."
 ACTIVE_STATUSES = ("pending", "processing")
 
 
@@ -41,6 +45,23 @@ class JobLimitReached(Exception):
 
 class JobAlreadyFinished(Exception):
     """The job was already completed (a task delivered twice): nothing must be saved again."""
+
+
+def expire_stale_jobs(connection, owner_user_id: int, job_id: str | None = None) -> int:
+    """Mark the user's (or one) running jobs that have not changed for STALE_AFTER_MINUTES as
+    failed, and drop their file. Returns how many were marked."""
+    return connection.execute(
+        text(
+            "UPDATE processing_jobs SET status = 'failed', error_code = :code, "
+            "       error_message = :message, file_content = NULL, "
+            "       updated_at = now(), finished_at = now() "
+            "WHERE owner_user_id = :user_id AND status IN ('pending', 'processing') "
+            "  AND updated_at <= now() - make_interval(mins => :stale) "
+            "  AND (CAST(:job_id AS uuid) IS NULL OR id = CAST(:job_id AS uuid))"
+        ),
+        {"code": STALE_ERROR_CODE, "message": STALE_ERROR_MESSAGE, "user_id": owner_user_id,
+         "stale": STALE_AFTER_MINUTES, "job_id": job_id},
+    ).rowcount
 
 
 def create_job(
@@ -66,13 +87,15 @@ def create_job(
             text("SELECT pg_advisory_xact_lock(hashtext('processing_jobs'), :user_id)"),
             {"user_id": owner_user_id},
         )
+        expired = expire_stale_jobs(connection, owner_user_id)
+        if expired:
+            logger.warning("jobs_expired user_id=%s count=%d", owner_user_id, expired)
         active = connection.execute(
             text(
                 "SELECT count(*) FROM processing_jobs "
-                "WHERE owner_user_id = :user_id AND status IN ('pending', 'processing') "
-                "AND updated_at > now() - make_interval(mins => :stale)"
+                "WHERE owner_user_id = :user_id AND status IN ('pending', 'processing')"
             ),
-            {"user_id": owner_user_id, "stale": STALE_AFTER_MINUTES},
+            {"user_id": owner_user_id},
         ).scalar_one()
         if active >= MAX_ACTIVE_JOBS:
             raise JobLimitReached()
@@ -108,6 +131,8 @@ def delete_job(job_id: str) -> None:
 def get_job(job_id: str, *, owner_user_id: int) -> dict[str, Any] | None:
     """The user's job, with the saved document's summary once it is completed."""
     with get_connection() as connection:
+        if expire_stale_jobs(connection, owner_user_id, job_id):
+            logger.warning("jobs_expired user_id=%s job_id=%s", owner_user_id, job_id)
         row = connection.execute(
             text(
                 "SELECT j.id, j.status, j.filename, j.file_type, j.file_size, j.attempts, "
