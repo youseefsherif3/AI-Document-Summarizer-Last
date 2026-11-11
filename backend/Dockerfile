@@ -16,4 +16,4 @@ COPY alembic.ini .
 RUN useradd --create-home worker
 USER worker
 
-CMD ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "--concurrency=2", "-Q", "documind", "-E"]
+CMD ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "-Q", "documind", "-E"]

@@ -123,6 +123,11 @@ _client_cache: dict[str, Any] = {}
 
 
 def _get_async_client() -> AsyncOpenAI:
+    from app.services import fake_llm
+
+    if fake_llm.fake_llm_enabled():
+        # Load tests: a local stand-in, no network, no key (see services/fake_llm.py).
+        return fake_llm.FakeClient()  # type: ignore[return-value]
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

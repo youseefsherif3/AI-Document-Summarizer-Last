@@ -31,6 +31,7 @@ from .database import (
 from app.services.chat import HistoryMessage, prepare_answer, stream_answer
 from app.services.chunking import Chunk, chunk_pages
 from app.services.embeddings import embed_texts
+from app.services import fake_llm
 from app.services.ai_calls import ai_base_url
 from app.services.summarizer import (
     MODEL as SUMMARY_MODEL,
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI):
     limits.check_limit_settings()
     ingestion.check_ingestion_settings()
     cache.check_cache_settings()
+    fake_llm.check_fake_llm_settings()
     check_database()
     yield
 
@@ -184,7 +186,10 @@ def root():
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy"}
+    health = {"status": "healthy"}
+    if fake_llm.fake_llm_enabled():
+        health["fake_llm"] = True  # only shown when on: the load test checks it
+    return health
 
 
 @app.get("/metrics", include_in_schema=False)

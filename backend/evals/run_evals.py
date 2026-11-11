@@ -29,6 +29,7 @@ from sqlalchemy.engine import make_url
 
 # Evals measure the models and have their own embedding cache: never the app's Redis cache.
 os.environ["CACHE_ENABLED"] = "false"
+os.environ["FAKE_LLM"] = "false"  # evals measure the real models
 
 import app.database as database  # noqa: E402
 from app.extraction import Page, extract_pages, join_pages

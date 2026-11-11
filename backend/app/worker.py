@@ -8,7 +8,7 @@ The broker is Redis (REDIS_URL, default redis://127.0.0.1:6379/0). The only task
 import os
 
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_init, worker_process_init
 
 from app import context, ingestion
 
@@ -28,6 +28,8 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     # No results backend: the job table is the result.
     task_ignore_result=True,
+    # Jobs a worker process runs at the same time (the Dockerfile sets no --concurrency).
+    worker_concurrency=int(os.getenv("WORKER_CONCURRENCY", "2")),
     broker_connection_retry_on_startup=True,
     # The API waits for this when Redis is down; fail fast so the user gets a clear error.
     broker_connection_timeout=3,
@@ -35,6 +37,13 @@ celery_app.conf.update(
     task_publish_retry_policy={"max_retries": 1, "interval_start": 0, "interval_step": 0.2,
                                "interval_max": 0.5},
 )
+
+
+@worker_init.connect
+def _check_settings(**_):
+    from app.services import fake_llm
+
+    fake_llm.check_fake_llm_settings()  # refuses fake mode on Vercel, announces it otherwise
 
 
 @worker_process_init.connect
