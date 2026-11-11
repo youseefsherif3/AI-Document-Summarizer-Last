@@ -30,6 +30,36 @@ const isUploading = (document: UploadedDocument) =>
   document.status === "extracting" ||
   document.status === "summarizing";
 
+// Queue ingestion (the backend answers an upload with 202 and a job id): how often the job is
+// checked, and how many checks in a row may fail (network trouble) before giving up.
+const JOB_POLL_INTERVAL_MS = 1500;
+const JOB_POLL_MAX_FAILURES = 5;
+
+interface BackendJob {
+  status: "pending" | "processing" | "completed" | "failed";
+  document_id: number | null;
+  summary: string | null;
+  error: { code: string; message: string } | null;
+}
+
+/** Wait, but stop with an AbortError as soon as the signal is aborted. */
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+
 interface DocumentsContextType {
   documents: UploadedDocument[];
   error: string | null;
@@ -129,6 +159,57 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     );
   };
 
+  // Queue ingestion: check the job until it ends, showing "Pending" while it waits in the
+  // queue and "Summarizing" while the worker has it. The whole summary arrives at the end.
+  const waitForJob = async (
+    id: string,
+    jobId: string,
+    signal: AbortSignal,
+  ) => {
+    let failures = 0;
+    while (true) {
+      await sleep(JOB_POLL_INTERVAL_MS, signal);
+      let job: BackendJob;
+      try {
+        const response = await apiFetch(`/jobs/${jobId}`, {
+          cache: "no-store",
+          signal,
+        });
+        if (response.status === 404) throw new Error("The upload job was not found.");
+        if (!response.ok) throw new Error("Could not check the upload.");
+        job = await response.json();
+        failures = 0;
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") throw err;
+        if (err instanceof Error && err.message === "The upload job was not found.") throw err;
+        failures += 1;
+        if (failures >= JOB_POLL_MAX_FAILURES) {
+          throw new Error("Could not check the upload. Refresh the page to see its result.");
+        }
+        continue;
+      }
+
+      if (job.status === "completed") {
+        updateDocument(id, {
+          backendId: job.document_id ?? undefined,
+          status: "completed",
+          progress: 100,
+          summary: job.summary ?? undefined,
+        });
+        return;
+      }
+      if (job.status === "failed") {
+        throw new Error(job.error?.message ?? "Failed to process the document.");
+      }
+      updateDocument(
+        id,
+        job.status === "processing"
+          ? { status: "summarizing", progress: 75 }
+          : { status: "pending", progress: 55 },
+      );
+    }
+  };
+
   // Upload a document to the backend.
   const uploadDocument = async (document: UploadedDocument) => {
     updateDocument(document.id, {
@@ -189,6 +270,16 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
             ? data.detail
             : "Failed to process the document.",
         );
+      }
+
+      if (response.status === 202) {
+        // INGESTION_MODE=queue on the backend: a worker processes the file.
+        const { job_id: jobId } = (await response.json()) as { job_id: string };
+        updateDocument(document.id, { status: "pending", progress: 55 });
+        await waitForJob(document.id, jobId, controller.signal);
+        window.dispatchEvent(new Event("documents-updated"));
+        await refreshDocuments();
+        return;
       }
 
       if (!response.body) throw new Error("The summary stream was unavailable.");
