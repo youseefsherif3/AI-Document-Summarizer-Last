@@ -468,12 +468,13 @@ export default function ChatPage() {
                 type="button"
                 disabled={remainingSlots <= 0}
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm text-gray-400 sm:px-3 transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex max-w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-gray-400 sm:px-3 transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Paperclip size={18} className="shrink-0" />
-                <span className="whitespace-nowrap">Attach files</span>
-                {/* Shorter on phones so Send still fits on the same row */}
-                <span className="whitespace-nowrap text-xs text-gray-600 sm:hidden">
+                {/* Short label and no slot hint below 380 px, so the row always fits next to Send */}
+                <span className="whitespace-nowrap max-[379px]:hidden">Attach files</span>
+                <span className="whitespace-nowrap min-[380px]:hidden">Attach</span>
+                <span className="whitespace-nowrap text-xs text-gray-600 max-[379px]:hidden sm:hidden">
                   {remainingSlots > 0
                     ? `(${remainingSlots}/${MAX_CONCURRENT_UPLOADS} free)`
                     : "(busy)"}
