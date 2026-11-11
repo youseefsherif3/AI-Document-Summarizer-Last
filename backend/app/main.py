@@ -17,7 +17,7 @@ from sqlalchemy import text
 from pydantic import BaseModel, Field
 from vercel import blob
 
-from . import auth, cache, context, ingestion, jobs, limits, metrics
+from . import auth, cache, context, ingestion, jobs, limits, metrics, usage_report
 from .auth import User, current_user, require_trusted_origin
 from .extraction import extract_pages, join_pages
 from .database import (
@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
     ingestion.check_ingestion_settings()
     cache.check_cache_settings()
     fake_llm.check_fake_llm_settings()
+    usage_report.check_usage_settings()
     check_database()
     yield
 
@@ -90,6 +91,7 @@ app.add_middleware(auth.SessionCookieMiddleware)
 # Outermost: counts and times every request (after the CORS and cookie layers ran).
 app.add_middleware(metrics.MetricsMiddleware)
 app.include_router(auth.router)
+app.include_router(usage_report.router)
 context.install_log_context()  # job ids in every log line made while a job is worked on
 
 

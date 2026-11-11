@@ -153,6 +153,8 @@ def test_the_public_routes_are_exactly_the_expected_ones():
         ("GET", "/documents"),
         ("GET", "/dashboard"),
         ("GET", "/jobs/{job_id}"),
+        ("GET", "/usage/today"),
+        ("GET", "/usage/summary"),
         ("POST", "/documents/upload/stream"),
         ("POST", "/documents/upload/stream/blob"),
         ("POST", "/chat/stream"),
@@ -416,3 +418,23 @@ def test_after_logout_nothing_is_reachable(users, model):
     assert a.request("GET", "/documents").status_code == 401
     assert a.chat()[0].status_code == 401
     assert model.requests == []
+
+
+def test_each_user_sees_only_their_own_usage(users):
+    """With two real signed-in sessions: A's AI calls and daily counters are invisible to B."""
+    a, b = users
+    sql("INSERT INTO ai_usage (user_id, kind, model, outcome, prompt_tokens, completion_tokens, "
+        "total_tokens, duration_ms) VALUES (:u, 'chat', 'a-only-model', 'ok', 100, 10, 110, 5)",
+        {"u": a.user_id})
+    sql("INSERT INTO daily_usage (user_id, day, uploads, chat_questions) "
+        "VALUES (:u, :d, 3, 42)", {"u": a.user_id, "d": datetime.now(timezone.utc).date()})
+
+    mine = a.request("GET", "/usage/summary").json()
+    assert mine["totals"]["total_tokens"] == 110 and mine["recent_calls"][0]["model"] == "a-only-model"
+    assert a.request("GET", "/usage/today").json()["chat"]["used"] == 42
+
+    theirs = b.request("GET", "/usage/summary", params={"user_id": a.user_id}).json()
+    assert theirs["totals"]["calls"] == 0 and theirs["recent_calls"] == []
+    assert "a-only-model" not in str(theirs)
+    today = b.request("GET", "/usage/today", params={"user_id": a.user_id}).json()
+    assert (today["chat"]["used"], today["uploads"]["used"]) == (0, 0)
