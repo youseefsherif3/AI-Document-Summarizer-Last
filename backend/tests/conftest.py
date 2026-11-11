@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 
 # Importing app.database loads backend/.env, so TEST_DATABASE_URL can live there.
 import app.database as database
+import app.ingestion as ingestion
 import app.main as main
 
 SETUP_HINT = (
@@ -77,6 +78,7 @@ def fake_embeddings(monkeypatch):
         return [[1.0] + [0.0] * (database.EMBEDDING_DIMENSIONS - 1) for _ in texts]
 
     monkeypatch.setattr(main, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(ingestion, "embed_texts", fake_embed_texts)
     return calls
 
 
@@ -95,6 +97,12 @@ def retry_waits(monkeypatch):
 
     monkeypatch.setattr(ai_calls, "_sleep", no_wait)
     return waits
+
+
+@pytest.fixture(autouse=True)
+def ingestion_inline(monkeypatch):
+    """Uploads run inline (the default) unless a test chooses the queue."""
+    monkeypatch.delenv("INGESTION_MODE", raising=False)
 
 
 @pytest.fixture(autouse=True)

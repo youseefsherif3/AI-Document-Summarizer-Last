@@ -27,7 +27,6 @@ import logging
 import os
 import random
 import time
-from functools import cache
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -115,14 +114,31 @@ def _require_api_key() -> str:
 
 # The client is created on first use so importing this module (e.g. in tests)
 # does not require an API key. A failed key check is not cached.
-@cache
+#
+# An AsyncOpenAI client is tied to the event loop it was first used in. The API has one loop
+# for its whole life, but a Celery task runs each job in a new loop (`asyncio.run`), where a
+# client from an earlier loop fails with "Event loop is closed". So the cached client is
+# reused only while the same loop is running, and replaced when the loop changes.
+_client_cache: dict[str, Any] = {}
+
+
 def _get_async_client() -> AsyncOpenAI:
-    return AsyncOpenAI(
-        base_url=ai_base_url(),
-        api_key=_require_api_key(),
-        timeout=REQUEST_TIMEOUT_SECONDS,
-        max_retries=0,  # retries happen in this module, where they are logged
-    )
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None  # created outside any loop (tests): it is not reused by a later loop
+    if "client" not in _client_cache or _client_cache["loop"] is not loop:
+        _client_cache["client"] = AsyncOpenAI(
+            base_url=ai_base_url(),
+            api_key=_require_api_key(),
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            max_retries=0,  # retries happen in this module, where they are logged
+        )
+        _client_cache["loop"] = loop
+    return _client_cache["client"]
+
+
+_get_async_client.cache_clear = _client_cache.clear  # type: ignore[attr-defined]
 
 
 def retry_after_seconds(error: Exception) -> float | None:

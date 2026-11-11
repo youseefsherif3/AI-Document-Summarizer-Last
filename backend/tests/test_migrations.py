@@ -166,6 +166,26 @@ def test_document_owner_migration_adds_the_column_and_index_and_downgrades_clean
     assert after == before, explain(before, after)
 
 
+def test_jobs_migration_adds_the_table_and_downgrades_to_the_previous_schema(scratch_database):
+    url = scratch_database()
+    config = alembic_config(url)
+    command.upgrade(config, "0003_document_owner")
+    before = schema_check.snapshot_of(url)
+
+    command.upgrade(config, "0004_processing_jobs")
+    jobs = schema_check.snapshot_of(url)["tables"]["processing_jobs"]
+    assert jobs["columns"]["status"]["default"] == "'pending'::text"
+    assert jobs["columns"]["owner_user_id"]["not_null"] is True
+    assert jobs["constraints"]["processing_jobs_owner_user_id_fkey"].endswith("ON DELETE CASCADE")
+    assert jobs["constraints"]["processing_jobs_document_id_fkey"].endswith("ON DELETE SET NULL")
+    assert "(status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, "        "'failed'::text]))" in " ".join(jobs["constraints"].values())
+    assert "ix_processing_jobs_owner_status" in jobs["indexes"]
+
+    command.downgrade(config, "0003_document_owner")
+    after = schema_check.snapshot_of(url)
+    assert after == before, explain(before, after)
+
+
 def test_existing_documents_have_no_owner_after_the_migration(scratch_database):
     url = scratch_database()
     config = alembic_config(url)

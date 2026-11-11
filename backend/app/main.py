@@ -8,6 +8,7 @@ import os
 import re
 from functools import partial
 from typing import Literal
+from uuid import UUID
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,7 @@ from sqlalchemy import text
 from pydantic import BaseModel, Field
 from vercel import blob
 
-from . import auth, limits
+from . import auth, ingestion, jobs, limits
 from .auth import User, current_user, require_trusted_origin
 from .extraction import extract_pages, join_pages
 from .database import (
@@ -52,6 +53,7 @@ _app_logger.setLevel(logging.INFO)
 async def lifespan(app: FastAPI):
     # Read-only: the schema comes from Alembic migrations, never from startup code.
     limits.check_limit_settings()
+    ingestion.check_ingestion_settings()
     check_database()
     yield
 
@@ -88,6 +90,15 @@ async def daily_limit_reached(request, error: limits.DailyLimitReached):
         status_code=429,
         content={"detail": str(error), "code": "daily_limit"},
         headers={"Retry-After": str(error.retry_after)},
+    )
+
+
+@app.exception_handler(jobs.JobLimitReached)
+async def upload_limit_reached(request, error: jobs.JobLimitReached):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": str(error), "code": "upload_limit"},
+        headers={"Retry-After": "5"},
     )
 
 
@@ -130,6 +141,35 @@ async def _delete_temporary_blob(pathname: str):
                        exc_info=True)
 
 
+QUEUE_UNAVAILABLE_MESSAGE = "The processing queue is unavailable. Please try again later."
+
+
+async def _start_job(user_id: int, *, mode: str, **fields) -> str:
+    """Create the upload's job (this enforces the limit of 3 uploads at the same time), then
+    count it against the daily limit. Raises JobLimitReached or DailyLimitReached; a job that
+    was refused by the daily limit is removed again."""
+    job_id = await run_in_threadpool(partial(jobs.create_job, user_id, mode=mode, **fields))
+    try:
+        await run_in_threadpool(limits.enforce_daily_limit, user_id, "upload")
+    except limits.DailyLimitReached:
+        await run_in_threadpool(jobs.delete_job, job_id)
+        raise
+    return job_id
+
+
+async def _enqueue_job(job_id: str) -> JSONResponse:
+    """Hand the job to the worker and answer 202 with its id. If the queue can't be reached,
+    the job fails and the user gets a 503."""
+    try:
+        await run_in_threadpool(ingestion.enqueue_job, job_id)
+    except ingestion.QueueUnavailable:
+        await run_in_threadpool(
+            jobs.mark_failed, job_id, "queue_unavailable", QUEUE_UNAVAILABLE_MESSAGE
+        )
+        raise HTTPException(status_code=503, detail=QUEUE_UNAVAILABLE_MESSAGE)
+    return JSONResponse(status_code=202, content={"job_id": job_id, "status": "pending"})
+
+
 @app.get("/")
 def root():
     return {"message": "AI Document Summarizer API is running"}
@@ -170,6 +210,26 @@ def get_documents(user: User = Depends(current_user)):
         }
         for row in rows
     ]
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: UUID, user: User = Depends(current_user)):
+    """The state of one of the user's upload jobs; another user's job is "not found"."""
+    job = jobs.get_job(str(job_id), owner_user_id=user.id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    failed = job["status"] == "failed"
+    return {
+        "id": str(job["id"]),
+        "status": job["status"],
+        "filename": job["filename"],
+        "attempts": job["attempts"],
+        "document_id": job["document_id"],
+        "summary": job["summary"] if job["status"] == "completed" else None,
+        "error": {"code": job["error_code"], "message": job["error_message"]} if failed else None,
+        "created_at": job["created_at"],
+        "finished_at": job["finished_at"],
+    }
 
 
 @app.get("/dashboard")
@@ -229,6 +289,7 @@ async def _summarize_and_index(
     extracted_text: str,
     document_chunks: list[Chunk],
     owner_user_id: int,
+    job_id: str | None = None,
 ):
     """SSE events for one upload: summary deltas, then `done` or `error`.
 
@@ -265,6 +326,7 @@ async def _summarize_and_index(
             document_chunks=document_chunks,
             embeddings=embeddings,
             owner_user_id=owner_user_id,
+            job_id=job_id,
         )
         yield _sse({"type": "done", "document_id": document_id, "summary": summary})
     except TimeoutError as error:
@@ -290,6 +352,12 @@ async def _summarize_and_index(
             embedding_task.cancel()
         # Wait for the task to finish and collect its result or error, so nothing is left running.
         await asyncio.gather(embedding_task, return_exceptions=True)
+        if job_id:
+            # A job that ended (the save completed it) is left alone; one that didn't (an
+            # error, or the client left) stops counting as a running upload.
+            await run_in_threadpool(
+                jobs.mark_failed, job_id, "failed", "The upload did not finish."
+            )
 
 
 @app.post("/documents/upload/stream", dependencies=[Depends(require_trusted_origin)])
@@ -307,6 +375,13 @@ async def upload_document_stream(
         raise HTTPException(status_code=413, detail="File size must not exceed 10 MB.")
     if not file_content:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+    if ingestion.ingestion_mode() == "queue":
+        # The worker reads the file, so a file it can't read fails the job, not this request.
+        job_id = await _start_job(
+            user.id, mode="queue", filename=filename, file_type=file_extension,
+            file_size=len(file_content), file_content=file_content,
+        )
+        return await _enqueue_job(job_id)
     try:
         # PDF parsing and chunking are CPU-heavy; keep them off the event loop.
         extracted_text, document_chunks = await run_in_threadpool(
@@ -317,15 +392,45 @@ async def upload_document_stream(
     if not extracted_text.strip():
         raise HTTPException(status_code=400, detail="No readable text found in the uploaded file.")
     # Counted before any AI call; an invalid file above doesn't use up the allowance.
-    await run_in_threadpool(limits.enforce_daily_limit, user.id, "upload")
+    job_id = await _start_job(
+        user.id, mode="inline", filename=filename, file_type=file_extension,
+        file_size=len(file_content),
+    )
 
     return StreamingResponse(
         _summarize_and_index(
-            filename, file_extension, file_content, extracted_text, document_chunks, user.id
+            filename, file_extension, file_content, extracted_text, document_chunks, user.id,
+            job_id,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
+
+
+async def _queue_blob_upload(
+    upload: BlobSummaryRequest, file_extension: str, user: User
+) -> JSONResponse:
+    """INGESTION_MODE=queue: check the Blob file's size, create the job and enqueue it. The
+    worker downloads the file and deletes it when the job ends."""
+    try:
+        metadata = await blob.head_blob(upload.pathname)
+    except blob.BlobNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Uploaded file was not found.") from error
+    except Exception as error:
+        await _delete_temporary_blob(upload.pathname)
+        raise HTTPException(status_code=502, detail="Could not retrieve uploaded file.") from error
+    if metadata.size > MAX_FILE_SIZE or metadata.size != upload.file_size:
+        await _delete_temporary_blob(upload.pathname)
+        raise HTTPException(status_code=413, detail="File size must not exceed 10 MB.")
+    try:
+        job_id = await _start_job(
+            user.id, mode="queue", filename=upload.filename, file_type=file_extension,
+            file_size=upload.file_size, blob_pathname=upload.pathname,
+        )
+        return await _enqueue_job(job_id)
+    except (limits.DailyLimitReached, jobs.JobLimitReached, HTTPException):
+        await _delete_temporary_blob(upload.pathname)
+        raise
 
 
 @app.post("/documents/upload/stream/blob", dependencies=[Depends(require_trusted_origin)])
@@ -356,6 +461,9 @@ async def upload_document_stream_from_blob(
     if not upload.pathname.lower().endswith(file_extension):
         await _delete_temporary_blob(upload.pathname)
         raise HTTPException(status_code=400, detail="Upload reference does not match the file type.")
+
+    if ingestion.ingestion_mode() == "queue":
+        return await _queue_blob_upload(upload, file_extension, user)
 
     try:
         metadata = await blob.head_blob(upload.pathname)
@@ -393,8 +501,11 @@ async def upload_document_stream_from_blob(
             detail="No readable text found in the uploaded file.",
         )
     try:
-        await run_in_threadpool(limits.enforce_daily_limit, user.id, "upload")
-    except limits.DailyLimitReached:
+        job_id = await _start_job(
+            user.id, mode="inline", filename=upload.filename, file_type=file_extension,
+            file_size=len(file_content),
+        )
+    except (limits.DailyLimitReached, jobs.JobLimitReached):
         await _delete_temporary_blob(upload.pathname)
         raise
 
@@ -404,7 +515,7 @@ async def upload_document_stream_from_blob(
             async with aclosing(
                 _summarize_and_index(
                     upload.filename, file_extension, file_content, extracted_text,
-                    document_chunks, user.id,
+                    document_chunks, user.id, job_id,
                 )
             ) as stream:
                 async for event in stream:

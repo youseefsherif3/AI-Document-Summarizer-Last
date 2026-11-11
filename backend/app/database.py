@@ -218,8 +218,13 @@ def save_document_with_chunks(
     embeddings: Sequence[Sequence[float]],
     *,
     owner_user_id: int,
+    job_id: str | None = None,
 ) -> int:
-    """Save a user's document and its chunks in one transaction: all of it or nothing."""
+    """Save a user's document and its chunks in one transaction: all of it or nothing.
+
+    With `job_id`, the upload job is marked completed in the same transaction. If the job has
+    already ended (a duplicate delivery), nothing is saved and JobAlreadyFinished is raised.
+    """
     if len(document_chunks) != len(embeddings):
         raise ValueError(
             f"Got {len(document_chunks)} chunks but {len(embeddings)} embeddings."
@@ -250,6 +255,10 @@ def save_document_with_chunks(
                 ),
                 [{**row, "document_id": document_id} for row in rows],
             )
+        if job_id is not None:
+            from app.jobs import complete_job_in_transaction  # jobs imports this module
+
+            complete_job_in_transaction(connection, job_id, document_id)
         return document_id
 
 

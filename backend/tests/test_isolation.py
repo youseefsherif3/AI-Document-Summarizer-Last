@@ -139,7 +139,9 @@ def all_routes() -> set[tuple[str, str]]:
 
 
 def concrete(path: str) -> str:
-    return path.replace("{document_id}", "1")
+    return path.replace("{document_id}", "1").replace(
+        "{job_id}", "00000000-0000-0000-0000-000000000001"
+    )
 
 
 def test_the_public_routes_are_exactly_the_expected_ones():
@@ -150,6 +152,7 @@ def test_the_public_routes_are_exactly_the_expected_ones():
         ("GET", "/auth/me"),
         ("GET", "/documents"),
         ("GET", "/dashboard"),
+        ("GET", "/jobs/{job_id}"),
         ("POST", "/documents/upload/stream"),
         ("POST", "/documents/upload/stream/blob"),
         ("POST", "/chat/stream"),

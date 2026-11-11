@@ -196,8 +196,9 @@ def test_upload_runs_extraction_and_saving_in_a_threadpool(monkeypatch):
         )
 
     assert '"type": "done"' in response.text
-    # Extraction + chunking, the daily-limit count, then the database write: all off the
-    # event loop.
-    assert calls == [
-        main._read_document, main.limits.enforce_daily_limit, main.save_document_with_chunks
+    # Extraction + chunking, the upload job, the daily-limit count, then the database write
+    # and the job's clean-up: all off the event loop.
+    assert [getattr(call, "func", call) for call in calls] == [
+        main._read_document, main.jobs.create_job, main.limits.enforce_daily_limit,
+        main.save_document_with_chunks, main.jobs.mark_failed,
     ]
