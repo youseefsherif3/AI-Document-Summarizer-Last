@@ -90,6 +90,7 @@
 - Arabic **PDF** extraction with pypdf came out badly broken in our test (stray control characters, split words, scrambled word order) and was not investigated. Arabic PDFs are not supported for now, and eval questions whose source is an Arabic PDF (`waha_library_ar.pdf`, `nursin_port_ar.pdf`) are expected to fail. Arabic TXT and DOCX extraction, Arabic questions and English–Arabic retrieval worked in our tests, but Arabic is not a supported language: Arabic normalization for full-text search was skipped (step 15), and with hybrid search, English questions about Arabic documents rank worse than with vector-only search.
 
 ## Avoid
+- **Never use `git checkout` or `git restore` to undo a mutation check** (breaking code on purpose to see a test fail). It wiped uncommitted work twice. Copy the file first (or `git stash`), mutate, restore from the copy, then check `git diff` that your real edits are intact. Same care for `git reset --hard` and `git checkout -- .` on a dirty tree
 - Don't change prompts without running evals before and after (this includes the query rewrite prompt)
 - Don't fall back silently in AI code. A fallback must log, and in evals it must stop the run. Once, an empty query rewrite (a free reasoning model spent its whole reply on reasoning) silently fell back to the original question, and the eval report looked like a real "with rewriting" result while matching the no-rewrite run exactly. Check that an "after" run actually changed something before trusting it.
 - Don't add dependencies without asking
