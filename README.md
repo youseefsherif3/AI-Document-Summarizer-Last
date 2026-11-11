@@ -403,6 +403,15 @@ Backend project:
 | `QUERY_REWRITE_ENABLED` | optional, default off. Leave it unset: rewriting of follow-up questions is not yet measured with the production model (see `docs/design.md`) |
 | `QUERY_REWRITE_MODEL` | optional, default: the chat model |
 | `AI_PRICES_PER_MILLION_TOKENS` | optional JSON, used only to estimate cost when OpenRouter returns none |
+| `RECORD_AI_USAGE` | optional, default on: every AI call is recorded per user in the `ai_usage` table (needs migration 0005). Best effort on Vercel: a function frozen right after its response may lose its last rows. `false` turns it off |
+
+**Leave these unset (or absent) on Vercel**, so uploads stay inline with no Redis: `INGESTION_MODE`
+(unset means `inline`; `queue` would send uploads to a worker that doesn't exist there),
+`REDIS_URL` and `CACHE_REDIS_URL` (without a Redis URL the cache is off and never contacted),
+`CACHE_ENABLED` and the `CACHE_*_TTL_SECONDS` settings (no effect without Redis),
+`METRICS_TOKEN` (unset keeps `/metrics` off with a 404; it is system-wide), `WORKER_CONCURRENCY`
+(worker only), and **`FAKE_LLM`, which must never be set**: the app refuses to start on Vercel with
+it on, and it would replace real answers with fake ones anywhere else.
 
 Never put `OPENROUTER_API_KEY` or `DATABASE_URL` in the frontend project. `TEST_DATABASE_URL`
 and the `EVAL_*` settings are for local development only.
