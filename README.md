@@ -1,15 +1,117 @@
-# AI Document Summarizer
+# DocuMind: AI Document Summarizer
 
-Upload PDF, DOCX and TXT files, get AI summaries streamed as they are written, and **chat with
-your documents**: ask questions and get answers with numbered citations to the file and page
-they came from. Each person signs in with an email and password and sees only their own
-documents.
+Upload PDF, DOCX and TXT files, get an AI summary of each, and **chat with your documents**:
+ask questions and get answers with numbered citations to the file and page they came from.
+Each person signs in with an email and password and sees only their own documents.
 
-- **Frontend:** Next.js (`app/`, `components/`, `context/`, `lib/`).
-- **Backend:** FastAPI (`backend/app/`), PostgreSQL with pgvector for document chunks and vector
-  search, and OpenRouter for the summary, chat and embedding models.
-- **Design and decisions:** [`docs/design.md`](docs/design.md). Notes for AI coding assistants:
-  [`CLAUDE.md`](CLAUDE.md).
+**Live: [ai-doc-summarize.vercel.app](https://ai-doc-summarize.vercel.app)** (registration is open; each account has daily limits).
+
+## Features
+
+- **Accounts and isolation:** email and password (Argon2id), `httpOnly` session cookie, and every
+  document, chunk, search, job and usage record belongs to one user. Another user's data is "not found".
+- **RAG chat with citations:** answers stream **token by token**, cite their sources as `[1]`, `[2]`
+  (file, page, snippet) and come only from the user's documents. Retrieval is **hybrid**: pgvector
+  similarity search plus Postgres full-text search, merged with reciprocal rank fusion.
+- **Background ingestion with a queue:** in production an upload returns at once and a **Celery
+  worker** does the work (read, summary and embeddings, save in one transaction). Redis (Upstash) is
+  the queue and the worker runs on **Azure Container Apps and scales to zero** when idle. Uploads
+  still work without a worker (`INGESTION_MODE=inline`), which is also the one-step rollback.
+- **Redis cache:** embeddings and summaries can be cached per user (built and tested; switched off
+  in production for now).
+- **Monitoring:** a token-protected `/metrics` endpoint (requests, latency, AI calls and tokens, jobs,
+  cache, queue depth), **Flower** for the worker, and structured logs that carry the job id.
+- **Load testing:** a Locust scenario against a **fake LLM** (no cost) shows where the system slows
+  down first. [Report](docs/load-test-report.md).
+- **Daily limits and a Usage dashboard:** 20 uploads and 100 questions per account per UTC day, and a
+  Usage page with limits used, tokens per day and an estimated cost in EGP.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    U["Browser"]
+    subgraph Vercel["Vercel"]
+        FE["Next.js frontend"]
+        API["FastAPI backend"]
+        BLOB[("Vercel Blob<br/>private files")]
+    end
+    subgraph Azure["Azure Container Apps"]
+        W["Celery worker<br/>scales to zero"]
+        KEDA["KEDA scale rule"]
+    end
+    REDIS[("Upstash Redis<br/>job queue")]
+    DB[("Neon Postgres<br/>+ pgvector")]
+    AI["AI provider<br/>SovereignEG"]
+
+    U -->|"pages, /api/*"| FE
+    FE -->|"/api rewrite"| API
+    U -->|"upload file"| BLOB
+    API -->|"enqueue job"| REDIS
+    REDIS -->|"take job"| W
+    KEDA -.->|"watches queue length"| REDIS
+    KEDA -.->|"starts / stops"| W
+    API -->|"documents, chunks, jobs"| DB
+    API -->|"chat: embed + stream"| AI
+    W -->|"download, delete"| BLOB
+    W -->|"save document"| DB
+    W -->|"summary, embeddings"| AI
+```
+
+**An upload:** the browser puts the file in Vercel Blob, the backend creates a job and enqueues it
+(`202`), the worker processes it and saves the document and its chunks in one transaction, and the page
+polls `GET /jobs/{id}` until the summary is ready. **A question:** the backend embeds it, searches the
+user's chunks (vector + full-text), and streams the answer from the model directly to the browser; chat
+never goes through the queue.
+
+## Tech stack
+
+| Area | Technology |
+|---|---|
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4 |
+| Backend | FastAPI (Python 3.13), SQLAlchemy Core, Alembic migrations, Pydantic |
+| Data | PostgreSQL with pgvector (Neon in production, Docker locally), Vercel Blob for files |
+| Queue and cache | Celery, Redis (Upstash, TLS), KEDA scaling on Azure Container Apps, GHCR for the worker image |
+| AI | Any OpenAI-compatible provider (production: SovereignEG `gpt-4o-mini` and `text-embedding-3-small`) |
+| Security | Argon2id, hashed session tokens, CSRF `Origin` check, per-user data scoping, rate limits |
+| Quality | pytest (800+ backend tests, no real AI calls), an eval suite, Locust with a fake LLM, type checks, ESLint, a production build |
+| Deployment | Vercel (frontend and API), Azure Container Apps (worker), Neon, Upstash |
+
+## Key results
+
+**Retrieval quality** (Phase 2 eval suite: a fictional corpus of 9 documents, 56 retrieval questions,
+top 8 chunks; full tables in [`docs/design.md`](docs/design.md)). Hybrid search against vector-only:
+
+| Group | hit@1 | hit@8 | MRR |
+|---|---|---|---|
+| Without the 14 Arabic-PDF questions (35 answerable) | 69% → **71%** | 100% → **100%** | 0.796 → **0.825** |
+| Table questions | 40% → **80%** | 100% → 100% | 0.633 → **0.900** |
+| Questions needing two documents: both in the top 8 | | 40% → **80%** | |
+
+The right source is always among the top 8 on everything except the Arabic PDFs, which are not
+supported (their text extraction is broken, a known issue). The full-answer evaluation is only partial
+(2 of 42 questions judged, both 5/5), because the free models used for judging were congested.
+
+**Load test** (Locust, fake LLM, everything on one laptop; [report](docs/load-test-report.md)):
+
+- **No failed requests** from 5 to 100 simulated users.
+- Chat: the first event arrives in **about 0.3 s** (p50) and the whole answer in **about 1.5 s**
+  (the fake model's delay), at 5 and at 100 users alike. Listing documents takes about 10 ms.
+- The first bottleneck is the worker, not the API: with 2 worker processes the time from upload to a
+  finished job at 50 users was **26 s (p50)**; with 8 processes it was **3.1 s**. That is why the worker
+  concurrency is a setting (`WORKER_CONCURRENCY`).
+
+**Production check:** a small TXT and a PDF over 4.5 MB (through Blob) were processed by the Azure worker
+in about 4 s per job, and chat answered from them. The worker's cold start (from zero replicas) has not
+been measured yet.
+
+## Documentation
+
+- [`docs/design.md`](docs/design.md): the RAG design, the eval suite and its results.
+- [`docs/phase3-plan.md`](docs/phase3-plan.md): the production plan and what was built (accounts, queue,
+  cache, monitoring, load test, the Azure worker).
+- [`docs/load-test-report.md`](docs/load-test-report.md) and [`loadtest/README.md`](loadtest/README.md): the load test.
+- [`CLAUDE.md`](CLAUDE.md): notes for AI coding assistants. The sections below are the setup, operations and deployment details.
 
 ## Requirements
 
