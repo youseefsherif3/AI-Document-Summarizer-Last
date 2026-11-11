@@ -798,7 +798,7 @@ function Read-Secret($prompt) {
 }
 ```
 
-**A. Measure on a real Upstash database (no Azure, no paid AI call)**
+**A. Measure on a real Upstash database (no Azure, no paid AI call).** *Skipped by decision (2026-11-11): trial; Upstash moves to a paid plan later. Only `ping` was run: TLS connects with the certificate verified.*
 
 1. Upstash console → *Create database*: name `documind-queue`, region **US East (Ohio)** if offered, otherwise
    N. Virginia, **TLS on**, **eviction off** (an evicting queue loses tasks), Free plan.
@@ -814,49 +814,95 @@ function Read-Secret($prompt) {
    Read the **commands used** on the Upstash dashboard before, after the idle 10 minutes, and after the 10 jobs.
    Expected: idle about 120 commands (0.2/s), about 12 per job. Tell me the three numbers.
 
-**B. Image: prove it holds no secrets, then push to GHCR**
+**Before B and C: install and prepare (once)**
+
+- **Azure CLI** (not installed yet): `winget install -e --id Microsoft.AzureCLI`, then **open a new PowerShell**
+  and check `az version`. Then `az extension add --name containerapp --upgrade`. You need an Azure
+  subscription you can create resource groups in (Contributor on it is enough).
+- **Docker Desktop** (installed; the engine is `linux/amd64`, which is what Container Apps runs).
+- **Git** (installed). GitHub CLI and Vercel CLI are **not** needed for B and C (the Vercel CLI, for step F, is
+  optional: the dashboard does the same).
+- **GitHub token** for pushing the image: a **classic** personal access token (GHCR does not accept
+  fine-grained tokens) with **only** the scope **`write:packages`** (it includes `read:packages`). No `repo`
+  scope is needed because the repository is public. Create it at GitHub → Settings → Developer settings →
+  Personal access tokens → Tokens (classic), expiry 30 days. Azure needs **no GitHub token**: the package is made public.
+- **Where the values come from:** the Neon **pooled** `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN` and the
+  SovereignEG `AI_API_KEY` are the ones in the Vercel backend project (Settings → Environment Variables);
+  the Upstash URL is already in `backend/.env` (`UPSTASH_REDIS_URL`). Also confirm there that `AI_BASE_URL`,
+  `OPENROUTER_MODEL`, `OPENROUTER_EMBEDDING_MODEL` and `EMBEDDING_DIMENSIONS` equal the values in step C.
+
+**GHCR and a public repository:** the repository `youseefsherif3/AI-Document-Summarizer-Last` is **public**
+(checked through GitHub's API). A *public repository does not make its package public*: the first push
+creates the package **private**, and it must be switched to Public once (GitHub → your profile → Packages →
+`documind-worker` → Package settings → Change visibility → Public). The label `org.opencontainers.image.source`
+(set in the build below) links the package to the repository. Public means Azure pulls with no credentials and
+there is no token to store in Azure; the image holds no secrets (checked below), only the application code,
+which is already public. If you leave it private, Azure would need a `read:packages` token as a registry secret.
+
+**B. Image: prove it holds no secrets, then push to GHCR (tag = git SHA)**
 
 ```powershell
-cd C:\Users\ysher\Downloads\AI-Document-Summarizer-master
-docker build -t documind-worker:check .\backend
-# Everything the image contains under /srv/backend, and any .env / key / certificate file anywhere in it:
-docker run --rm --entrypoint find documind-worker:check /srv/backend -type f
-docker run --rm --entrypoint sh documind-worker:check -c "find / -xdev ( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name 'users.json' -o -name '*secret*' -o -name '*credential*' ) -not -path '/usr/*' -not -path '/etc/ssl/*' -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null; echo '(end)'"
-# Expected: the first lists only app/, migrations/, alembic.ini, requirements.txt (36 files, no .pyc);
-# the second prints only (end). (/etc/ssl holds Debian's public root certificates; they are not secrets.)
+Set-PSReadLineOption -HistorySaveStyle SaveNothing
+function Read-Secret($prompt) {
+  $s = Read-Host $prompt -AsSecureString
+  [System.Net.NetworkCredential]::new("", $s).Password
+}
 
-$ghUser = "<your-github-user>"
-$tag    = (git rev-parse --short HEAD)
-$token  = Read-Secret "GitHub token (write:packages)"
+Set-Location C:\Users\ysher\Downloads\AI-Document-Summarizer-master
+git status --porcelain                         # must print nothing: the tag below names exactly what is built
+$ghUser = "youseefsherif3"
+$tag    = git rev-parse --short HEAD
+$repo   = "https://github.com/youseefsherif3/AI-Document-Summarizer-Last"
+$image  = "ghcr.io/$ghUser/documind-worker:$tag"
+
+docker build -t documind-worker:check -t $image `
+  --label "org.opencontainers.image.source=$repo" --label "org.opencontainers.image.revision=$tag" .\backend
+
+# Proof that no secret is inside (nothing is pushed yet):
+docker run --rm --entrypoint find documind-worker:check /srv/backend -type f | Measure-Object   # Count: 36
+docker run --rm --entrypoint find documind-worker:check /srv/backend -maxdepth 1                 # app, migrations, alembic.ini, requirements.txt
+docker run --rm --entrypoint sh documind-worker:check -c 'find / -xdev \( -name ''.env*'' -o -name ''*.pem'' -o -name ''*.key'' -o -name ''users.json'' -o -name ''*secret*'' -o -name ''*credential*'' \) -not -path ''/usr/*'' -not -path ''/etc/ssl/*'' -not -path ''/proc/*'' -not -path ''/sys/*'' 2>/dev/null; echo ''(end)'''
+# Expected: only "(end)". STOP and tell me if anything else is listed. (/etc/ssl = public root certificates.)
+
+$token = Read-Secret "GitHub token (classic, write:packages)"
 $token | docker login ghcr.io -u $ghUser --password-stdin
 Remove-Variable token
-docker tag documind-worker:check ghcr.io/$ghUser/documind-worker:$tag
-docker push ghcr.io/$ghUser/documind-worker:$tag
-# GitHub → Packages → documind-worker → Package settings → Change visibility → Public
+docker push $image
+docker logout ghcr.io
+$image                                         # note this: step C uses it
+# Then, once: GitHub → Packages → documind-worker → Package settings → Change visibility → Public.
 ```
 
-**C. Azure (Azure CLI; not yet run by anyone)**
+**C. Azure in East US 2, `min replicas 1` for the smoke test**
 
 ```powershell
-az login
-az account set --subscription "<SUBSCRIPTION>"
+az login                                       # opens the browser
+az account list -o table
+az account set --subscription "<SUBSCRIPTION NAME OR ID>"
 az extension add --name containerapp --upgrade
 az provider register --namespace Microsoft.App
 az provider register --namespace Microsoft.OperationalInsights
+az provider show --namespace Microsoft.App --query registrationState -o tsv   # wait until: Registered
 
-$rg = "documind-rg"; $env = "documind-env"; $app = "documind-worker"; $region = "eastus2"
+$rg = "documind-rg"; $envName = "documind-env"; $app = "documind-worker"; $region = "eastus2"
 az group create -n $rg -l $region
-az containerapp env create -n $env -g $rg -l $region
+az containerapp env create -n $envName -g $rg -l $region
 
-$dbUrl      = Read-Secret "Neon POOLED DATABASE_URL"
-$redisUrl   = Read-Secret "Upstash REDIS_URL (rediss://...?ssl_cert_reqs=required)"
-$redisToken = Read-Secret "Upstash token (the password in that URL)"
-$blobToken  = Read-Secret "BLOB_READ_WRITE_TOKEN"
-$aiKey      = Read-Secret "SovereignEG AI_API_KEY"
-$endpoint   = Read-Host "Upstash endpoint host (no scheme, no token)"
+# Secrets: read without echo, nothing typed on a command line, nothing in the history file.
+$dbUrl     = Read-Secret "Neon POOLED DATABASE_URL (as on the Vercel backend)"
+$blobToken = Read-Secret "BLOB_READ_WRITE_TOKEN"
+$aiKey     = Read-Secret "SovereignEG AI_API_KEY"
+# The Upstash URL is already in backend\.env; read it from there instead of pasting it again
+# (it is not printed; if the line is missing this stops with an error):
+$line     = Get-Content .\backend\.env | Where-Object { $_ -like 'UPSTASH_REDIS_URL=*' } | Select-Object -First 1
+$redisUrl = $line.Substring('UPSTASH_REDIS_URL='.Length).Trim()
+$redisUri   = [uri]$redisUrl
+$redisToken = $redisUri.UserInfo.Split(':', 2)[1]      # the Upstash token (for KEDA, which takes it separately)
+$endpoint   = $redisUri.Host                           # safe-dodo-137259.upstash.io (not secret)
+"Redis host: $endpoint | scheme: $($redisUri.Scheme) | token length: $($redisToken.Length)"   # no secret shown
 
-az containerapp create -n $app -g $rg --environment $env `
-  --image ghcr.io/$ghUser/documind-worker:$tag `
+az containerapp create -n $app -g $rg --environment $envName `
+  --image $image `
   --cpu 0.5 --memory 1.0Gi --min-replicas 1 --max-replicas 1 `
   --secrets "database-url=$dbUrl" "redis-url=$redisUrl" "redis-password=$redisToken" "blob-token=$blobToken" "ai-api-key=$aiKey" `
   --env-vars DATABASE_URL=secretref:database-url REDIS_URL=secretref:redis-url `
@@ -867,13 +913,16 @@ az containerapp create -n $app -g $rg --environment $env `
   --scale-rule-name queue-length --scale-rule-type redis `
   --scale-rule-metadata "address=${endpoint}:6379" "listName=documind" "listLength=1" "enableTLS=true" `
   --scale-rule-auth "password=redis-password"
-Remove-Variable dbUrl, redisUrl, redisToken, blobToken, aiKey
+
+Remove-Variable dbUrl, blobToken, aiKey, line, redisUrl, redisUri, redisToken
 ```
 
-(`min-replicas 1` is for the smoke test only; step E sets it to 0. `listLength=1`: scale up when anything
-waits; with `max-replicas 1` this is just the 0→1 switch. The secret values pass through `az` as arguments for
-the length of that command, but never touch the PowerShell history. If the scaler is refused, add
-`"username=default"` to the metadata *(unverified)*.)
+Notes: no ingress is created (the worker has no web port). The secret values are on `az`'s argument list for the
+length of that one command, never in the PowerShell history. `az` on Windows is a batch file: if a value
+contains `%` or `^` (unusual in these URLs; `&` in a Neon URL is fine inside the quotes) the command fails or
+mangles it; tell me and I will give a YAML variant. If the scale rule is refused, add `"username=default"` to
+the metadata *(unverified)*. `min-replicas 1` costs a little (one replica running) for as long as the smoke
+test lasts; step E sets it back to 0.
 
 **D. Smoke test the worker (before touching Vercel)**
 
